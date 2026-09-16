@@ -1,0 +1,42 @@
+[project]
+name = "homeintent-moonshine-stt"
+version = "0.1.0"
+description = "German speech-to-text using Moonshine streaming ASR"
+requires-python = ">=3.11"
+dependencies = [
+    "moonshine-voice==0.1.5",
+    "wyoming==1.10.2",
+    "numpy==1.24.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",      # pycodestyle
+    "F",           # pyflakes
+    "I",           # isort
+    "N",           # pep8-naming
+    "C90",         # mccabe
+    "UP",          # pyupgrade
+    "B",           # flake8-bugbear
+    "C4",          # flake8-comprehensions
+    "SIM",         # flake8-simplify
+]
+ignore = ["E501"]  # Line too long (handled by formatter)
+
+[tool.ruff.lint.isort]
+profile = "black"

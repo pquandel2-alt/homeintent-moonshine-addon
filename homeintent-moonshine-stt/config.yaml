@@ -1,0 +1,25 @@
+---
+name: HomeIntent Moonshine STT
+version: 0.1.0
+slug: homeintent-moonshine-stt
+description: Real-time German speech-to-text using Moonshine streaming ASR
+url: https://github.com/pquandel/homeintent-moonshine-addon
+arch:
+  - amd64
+  - aarch64
+init: false
+discovery:
+  - wyoming
+ports:
+  "10300/tcp": null
+backup_exclude:
+  - "models/*"
+options:
+  model: small
+  language: de
+  log_level: INFO
+schema:
+  model: list(tiny|small)
+  language: list(de)
+  log_level: list(DEBUG|INFO|WARNING|ERROR)
+homeassistant: "2023.11.0"

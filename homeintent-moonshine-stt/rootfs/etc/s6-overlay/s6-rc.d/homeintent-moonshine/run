@@ -1,0 +1,40 @@
+#!/command/with-contenv bashio
+
+# vim: ft=bash
+
+set -e
+
+export PYTHONUNBUFFERED=1
+export HF_HOME=/data/models
+export ORT_DISABLE_TELEMETRY=1
+
+# Parse configuration
+MODEL=$(bashio::config 'model')
+LANGUAGE=$(bashio::config 'language')
+LOG_LEVEL=$(bashio::config 'log_level')
+
+bashio::log.info "Starting HomeIntent Moonshine STT"
+bashio::log.info "Model: ${MODEL}"
+bashio::log.info "Language: ${LANGUAGE}"
+bashio::log.info "Log Level: ${LOG_LEVEL}"
+
+# Build flags
+FLAGS=()
+
+# Add model
+FLAGS+=("--model" "${MODEL}")
+
+# Add language
+FLAGS+=("--language" "${LANGUAGE}")
+
+# Add port
+FLAGS+=("--port" "10300")
+
+# Add debug if needed
+if [ "${LOG_LEVEL}" = "DEBUG" ]; then
+    FLAGS+=("--debug")
+fi
+
+# Run the application
+cd /app
+exec python3 -m app "${FLAGS[@]}"

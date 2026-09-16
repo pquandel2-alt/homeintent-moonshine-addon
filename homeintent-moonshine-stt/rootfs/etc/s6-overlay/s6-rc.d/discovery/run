@@ -1,0 +1,24 @@
+#!/command/with-contenv bashio
+
+# vim: ft=bash
+
+# Wait for service to be ready
+sleep 2
+
+# Check if service is listening
+if ! nc -w 1 localhost 10300 < /dev/null > /dev/null 2>&1; then
+    bashio::log.warning "Service not ready yet, skipping discovery"
+    exit 0
+fi
+
+bashio::log.info "Registering Wyoming service discovery"
+
+# Build discovery config
+config=$(bashio::var.json \
+    uri "tcp://$(hostname -I | awk '{print $1}'):10300"
+)
+
+# Send discovery info
+bashio::discovery "wyoming" "${config}" || true
+
+bashio::log.info "Discovery complete"
