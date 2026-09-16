@@ -263,7 +263,7 @@ name: HomeIntent Moonshine STT
 version: 0.1.0
 slug: homeintent-moonshine-stt
 description: Real-time German speech-to-text using Moonshine streaming ASR
-url: https://github.com/pquandel/homeintent-moonshine-addon
+url: https://github.com/pquandel2-alt/homeintent-moonshine-addon
 arch:
   - amd64
   - aarch64
@@ -584,7 +584,7 @@ async def test_add_audio_called_per_chunk_not_buffered(transcriber_factory):
 ```
 Settings → Add-ons → Add-on Store
   → Repositories (⋮)
-  → Add: https://github.com/pquandel/homeintent-moonshine-addon
+  → Add: https://github.com/pquandel2-alt/homeintent-moonshine-addon
   → HomeIntent Moonshine STT
   → Install
   → Start
@@ -699,7 +699,7 @@ Moonshine verarbeitet Wyoming Audio-Chunks bereits während des Sprechens
 ---
 
 **Erstellt**: 16. September 2026  
-**Repository**: https://github.com/pquandel/homeintent-moonshine-addon  
+**Repository**: https://github.com/pquandel2-alt/homeintent-moonshine-addon  
 **Lizenz**: MIT  
 
 Made with ❤️ für die Home Assistant Community

@@ -16,7 +16,7 @@ Real-time German speech-to-text using the Moonshine streaming ASR model.
 1. Open Home Assistant **Settings** → **Add-ons** → **Add-on Store**
 2. Click the menu button (⋮) in the top-right
 3. Click **Repositories**
-4. Add this repository URL: `https://github.com/pquandel/homeintent-moonshine-addon`
+4. Add this repository URL: `https://github.com/pquandel2-alt/homeintent-moonshine-addon`
 5. Click **Create** and wait for it to load
 6. Go back to the Add-on Store
 7. Find **HomeIntent Moonshine STT** and click it

@@ -51,7 +51,7 @@ This means **latency is reduced dramatically** — the model starts processing w
 3. Select **Repositories**
 4. Add this repository URL:
    ```
-   https://github.com/pquandel/homeintent-moonshine-addon
+   https://github.com/pquandel2-alt/homeintent-moonshine-addon
    ```
 5. Click **Create** and wait for it to load
 6. Go back to the Add-on Store tab
@@ -231,7 +231,7 @@ If transcription is slow:
 
 Clone the repository:
 ```bash
-git clone https://github.com/pquandel/homeintent-moonshine-addon.git
+git clone https://github.com/pquandel2-alt/homeintent-moonshine-addon.git
 cd homeintent-moonshine-addon
 ```
 
@@ -286,7 +286,7 @@ If you encounter issues:
 
 1. **Check the logs** — Add-ons → HomeIntent Moonshine STT → Logs
 2. **Review the [Troubleshooting](#troubleshooting) section**
-3. **Open an issue** — https://github.com/pquandel/homeintent-moonshine-addon/issues
+3. **Open an issue** — https://github.com/pquandel2-alt/homeintent-moonshine-addon/issues
 
 ---
 

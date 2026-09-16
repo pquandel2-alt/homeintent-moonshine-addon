@@ -3,7 +3,7 @@ name: HomeIntent Moonshine STT
 version: 0.1.0
 slug: homeintent-moonshine-stt
 description: Real-time German speech-to-text using Moonshine streaming ASR
-url: https://github.com/pquandel/homeintent-moonshine-addon
+url: https://github.com/pquandel2-alt/homeintent-moonshine-addon
 arch:
   - amd64
   - aarch64
