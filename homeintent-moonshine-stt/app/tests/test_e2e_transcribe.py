@@ -57,7 +57,7 @@ def _synthesize_german_pcm() -> bytes:
         audio = _resample_linear(audio, source_rate, WYOMING_SAMPLE_RATE)
 
     pcm_int16 = np.clip(audio * 32768.0, -32768, 32767).astype(np.int16)
-    return pcm_int16.tobytes()
+    return bytes(pcm_int16.tobytes())
 
 
 def _resample_linear(

@@ -116,7 +116,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install pytest pytest-asyncio numpy moonshine-voice wyoming websockets==17.1
+      - run: pip install pytest pytest-asyncio numpy==1.24.3 moonshine-voice wyoming websockets==17.1
 
       - name: Synthesize German audio, transcribe it, and check the result
         run: |
