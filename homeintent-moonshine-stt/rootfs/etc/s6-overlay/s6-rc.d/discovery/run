@@ -5,13 +5,26 @@
 # Sends discovery information to Home Assistant.
 # ==============================================================================
 declare config
+declare ready
 
-# Wait for the Wyoming server to become available
-bash -c \
-    "until
-        echo '{ \"type\": \"describe\" }'
-            > /dev/tcp/localhost/10300; do sleep 0.5;
-    done" > /dev/null 2>&1 || true;
+# Wait for the Wyoming server to become genuinely ready: a real Wyoming
+# describe/info round trip (the same check used for the Docker HEALTHCHECK,
+# see app/healthcheck.py), not just a bare TCP connect. Bounded so a broken
+# server cannot hang this oneshot service (and therefore add-on startup)
+# forever.
+ready=false
+for _ in $(seq 1 60); do
+    if (cd / && python3 -m app.healthcheck) > /dev/null 2>&1; then
+        ready=true
+        break
+    fi
+    sleep 1
+done
+
+if [ "${ready}" != "true" ]; then
+    bashio::log.error "Wyoming server did not become ready within 60s; skipping Home Assistant discovery."
+    exit 0
+fi
 
 config=$(\
     bashio::var.json \

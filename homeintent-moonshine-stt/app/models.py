@@ -71,10 +71,25 @@ def validate_model(model: str) -> bool:
         return False
 
 
+# Upstream defaults, confirmed from the real moonshine-voice 0.1.5 C++
+# source (core/transcriber.h / core/moonshine-c-api.cpp) at GitHub tag
+# v0.1.5. Do not change these without re-verifying against upstream: they
+# exist so that leaving a config option untouched reproduces upstream's own
+# behavior exactly, not an invented "tuned" value.
+DEFAULT_TRANSCRIPTION_INTERVAL = 0.5  # Transcriber.__init__(update_interval=...)
+DEFAULT_VAD_THRESHOLD = 0.5  # options["vad_threshold"]
+DEFAULT_DECODE_INCOMPLETE_LINES = True  # options["decode_incomplete_lines"]
+DEFAULT_KEYTERM_BOOST = 2.0  # options["keyterm_boost"], ContextBiaser::kDefaultBoost
+
+
 def load_transcriber(
     model: str = GermanModel.SMALL.value,
     language: str = "de",
     cache_root: Path | None = None,
+    transcription_interval: float = DEFAULT_TRANSCRIPTION_INTERVAL,
+    vad_threshold: float = DEFAULT_VAD_THRESHOLD,
+    decode_incomplete_lines: bool = DEFAULT_DECODE_INCOMPLETE_LINES,
+    keyterm_boost: float = DEFAULT_KEYTERM_BOOST,
 ) -> Transcriber:
     """Resolve, download (if needed), and load a Moonshine Transcriber.
 
@@ -86,6 +101,14 @@ def load_transcriber(
         model: Model size ("tiny" or "small"). Default: "small"
         language: Language code. Always "de" for this add-on.
         cache_root: Override for the model cache directory (used in tests).
+        transcription_interval: Seconds between streaming transcription
+            passes (Transcriber's ``update_interval``). Upstream default 0.5.
+        vad_threshold: Voice-activity-detection sensitivity, native option
+            ``vad_threshold``. Upstream default 0.5.
+        decode_incomplete_lines: Native option ``decode_incomplete_lines``.
+            Upstream default True.
+        keyterm_boost: Strength applied to terms passed to set_keyterms().
+            Native option ``keyterm_boost``. Upstream default 2.0.
 
     Returns:
         Initialized Transcriber instance ready to create streaming sessions.
@@ -111,18 +134,53 @@ def load_transcriber(
         resolved_cache_root,
     )
 
-    model_path, resolved_arch = get_model_for_language(
-        wanted_language=language,
-        wanted_model_arch=model_arch,
-        cache_root=resolved_cache_root,
-    )
+    # get_model_for_language()/download_file() (moonshine_voice.download_file)
+    # already download to a ".partial" file and atomically rename to the
+    # final path only after a size/hash/CRC32C check succeeds, and re-check
+    # under a file lock before reusing a cached file -- so first download,
+    # restart-with-cache, resumed partial download, and a corrupted cache
+    # entry (mismatched hash -> deleted and re-downloaded) are all upstream's
+    # own responsibility. We deliberately do not duplicate or second-guess
+    # that here with our own deletion logic; we only add clear logging.
+    try:
+        model_path, resolved_arch = get_model_for_language(
+            wanted_language=language,
+            wanted_model_arch=model_arch,
+            cache_root=resolved_cache_root,
+        )
+    except Exception as err:
+        _LOGGER.error(
+            "Failed to resolve/download Moonshine model (language=%s arch=%s "
+            "cache_root=%s): %s: %s",
+            language,
+            model_arch.name,
+            resolved_cache_root,
+            type(err).__name__,
+            err,
+        )
+        raise
 
     _LOGGER.info(
-        "Loading Moonshine transcriber: model_path=%s arch=%s",
+        "Loading Moonshine transcriber: model_path=%s arch=%s "
+        "update_interval=%s vad_threshold=%s decode_incomplete_lines=%s keyterm_boost=%s",
         model_path,
         resolved_arch.name,
+        transcription_interval,
+        vad_threshold,
+        decode_incomplete_lines,
+        keyterm_boost,
     )
-    transcriber = Transcriber(model_path, resolved_arch)
+    options = {
+        "vad_threshold": vad_threshold,
+        "decode_incomplete_lines": "true" if decode_incomplete_lines else "false",
+        "keyterm_boost": keyterm_boost,
+    }
+    transcriber = Transcriber(
+        model_path,
+        resolved_arch,
+        update_interval=transcription_interval,
+        options=options,
+    )
     _LOGGER.info("Moonshine %s model ready", model)
 
     return transcriber

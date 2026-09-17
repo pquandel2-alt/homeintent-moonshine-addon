@@ -1,17 +1,22 @@
 [project]
 name = "homeintent-moonshine-stt"
-version = "0.1.0"
+version = "0.1.2"
 description = "German speech-to-text using Moonshine streaming ASR"
 requires-python = ">=3.11"
 dependencies = [
     "moonshine-voice==0.1.5",
     "wyoming==1.10.2",
     "numpy==1.24.3",
+    "websockets==17.1",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = "-m 'not e2e'"
+markers = [
+    "e2e: real Wyoming round-trip against a downloaded model/TTS voice (slow, needs network; run explicitly with -m e2e)",
+]
 
 [tool.mypy]
 python_version = "3.11"

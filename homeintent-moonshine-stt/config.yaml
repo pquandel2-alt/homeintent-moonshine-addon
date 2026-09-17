@@ -1,6 +1,6 @@
 ---
 name: HomeIntent Moonshine STT
-version: 0.1.1
+version: 0.1.2
 slug: homeintent-moonshine-stt
 description: Real-time German speech-to-text using Moonshine streaming ASR
 url: https://github.com/pquandel2-alt/homeintent-moonshine-addon
@@ -14,12 +14,41 @@ ports:
   "10300/tcp": null
 backup_exclude:
   - "models/*"
+  - "debug_audio/*"
+# Grants proxied, read-only-by-our-own-usage access to the HA Core REST API
+# (http://supervisor/core/api/) and WebSocket API (ws://supervisor/core/websocket)
+# via SUPERVISOR_TOKEN. Used only by app/ha_vocabulary.py to read Area/Device/
+# Entity/Floor registries for use_ha_vocabulary -- never to call a service,
+# change a state, or edit an automation/entity.
+homeassistant_api: true
 options:
   model: small
   language: de
   log_level: INFO
+  log_transcripts: false
+  log_performance: true
+  extra_keyterms: ""
+  keyterm_boost: 2.0
+  use_ha_vocabulary: true
+  ha_vocabulary_refresh_minutes: 30
+  transcription_interval: 0.5
+  vad_threshold: 0.5
+  decode_incomplete_lines: true
+  save_debug_audio: false
+  debug_audio_max_files: 100
 schema:
   model: list(tiny|small)
   language: list(de)
   log_level: list(DEBUG|INFO|WARNING|ERROR)
+  log_transcripts: bool
+  log_performance: bool
+  extra_keyterms: str
+  keyterm_boost: float(0.0,10.0)
+  use_ha_vocabulary: bool
+  ha_vocabulary_refresh_minutes: int(0,1440)
+  transcription_interval: float(0.05,10.0)
+  vad_threshold: float(0.0,1.0)
+  decode_incomplete_lines: bool
+  save_debug_audio: bool
+  debug_audio_max_files: int(1,10000)
 homeassistant: "2023.11.0"

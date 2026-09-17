@@ -36,6 +36,37 @@ Real-time German speech-to-text using the Moonshine streaming ASR model.
 - **WARNING**: Only important messages
 - **ERROR**: Only errors
 
+### Recognition tuning (keyterms and vocabulary)
+
+- **use_ha_vocabulary** (default `true`): reads your Home Assistant Areas, Devices,
+  Entities, and Floors (via the Supervisor-proxied Core API) and biases recognition
+  towards your actual room/device names. Strictly read-only — never calls a service or
+  changes a state. If Home Assistant can't be reached, the add-on logs a warning and
+  still starts, using whatever keyterms it has.
+- **ha_vocabulary_refresh_minutes** (default `30`): how often the vocabulary is
+  re-read. `0` disables periodic refresh.
+- **extra_keyterms** (default empty): your own comma-separated words/phrases, merged
+  with the Home Assistant vocabulary and deduplicated, e.g. `Wohnzimmer, Rolladen`.
+- **keyterm_boost** (default `2.0`): strength applied to keyterms.
+- **transcription_interval** (default `0.5`): seconds between partial transcript
+  updates.
+- **vad_threshold** (default `0.5`): voice-activity-detection sensitivity.
+- **decode_incomplete_lines** (default `true`): decode/emit lines still in progress for
+  lower-latency partial results.
+
+### Logging and debugging
+
+- **log_transcripts** (default `false`): recognized text is never logged unless you
+  turn this on.
+- **log_performance** (default `true`): a compact per-utterance line (model, audio
+  duration, processing time, real-time factor) — never includes transcript text.
+- **save_debug_audio** (default `false`): saves received audio as WAV + JSON metadata
+  to `/data/debug_audio` for troubleshooting. Metadata is limited to an explicit
+  allowlist (timestamp, model, language, transcript, duration, sample rate) — never a
+  Home Assistant entity state. Excluded from backups. Turn on only while debugging.
+- **debug_audio_max_files** (default `100`): oldest-first retention limit for saved
+  debug audio.
+
 ## First Start
 
 The first time you start the add-on, it will download the selected model (~200MB for Small).
@@ -71,7 +102,18 @@ If the add-on fails to start, check the logs. Common issues:
 
 - **Tiny model** (34M params): faster inference, ~12% WER (upstream-published, German)
 - **Small model** (123M params): more compute per chunk, ~7.5% WER (upstream-published, German) — recommended for accuracy
-- Real-time-factor and end-to-end latency have not been benchmarked for this add-on
+- Real-time-factor and end-to-end latency depend heavily on your own CPU. Use
+  `python -m app.benchmark <file.wav>` (in the add-on's source repository) to measure
+  RTF on your own hardware — this is not run in CI and not the source of any number
+  quoted here.
+
+## Privacy
+
+- Transcripts and debug audio are **off by default** — nothing beyond a compact
+  performance-metrics line is logged unless you explicitly enable `log_transcripts` or
+  `save_debug_audio`.
+- `use_ha_vocabulary` only ever *reads* Home Assistant's registries — it never calls a
+  service, changes a state, or edits an entity/automation.
 
 ## License
 

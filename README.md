@@ -81,14 +81,27 @@ The add-on is configured via Home Assistant's UI:
 | **model** | `tiny`, `small` | `small` | Model size. Tiny = faster but less accurate, Small = better accuracy (recommended) |
 | **language** | `de` | `de` | Language (German only in v0.1) |
 | **log_level** | `DEBUG`, `INFO`, `WARNING`, `ERROR` | `INFO` | Logging verbosity |
+| **log_transcripts** | `true`/`false` | `false` | Log recognized text. **Off by default** — enable only if you need to debug what was actually recognized |
+| **log_performance** | `true`/`false` | `true` | Log a compact per-utterance line (model, audio duration, processing time, real-time factor). Never includes transcript text |
+| **use_ha_vocabulary** | `true`/`false` | `true` | Read your Home Assistant Areas/Devices/Entities/Floors (via the Supervisor-proxied Core API) and bias recognition towards your actual room and device names. **Strictly read-only** — no service is ever called, no state is ever changed. If Home Assistant is unreachable, the add-on logs a warning and starts anyway with whatever keyterms it has |
+| **ha_vocabulary_refresh_minutes** | `0`–`1440` | `30` | How often to re-read the HA registries and refresh keyterms. `0` disables periodic refresh (read once at startup) |
+| **extra_keyterms** | comma-separated text | `""` | Additional words/phrases to bias recognition towards, merged with the Home Assistant vocabulary and deduplicated. Example: `Wohnzimmer, Kaffeemaschine, Rolladen` |
+| **keyterm_boost** | `0.0`–`10.0` | `2.0` | Strength applied to keyterms (matches Moonshine's own default) |
+| **transcription_interval** | `0.05`–`10.0` | `0.5` | How often (in seconds) partial transcription updates are computed |
+| **vad_threshold** | `0.0`–`1.0` | `0.5` | Voice-activity-detection sensitivity (Moonshine's own default) |
+| **decode_incomplete_lines** | `true`/`false` | `true` | Whether to decode and emit lines that haven't finished yet, for lower-latency partial results |
+| **save_debug_audio** | `true`/`false` | `false` | Save received audio to `/data/debug_audio` as WAV + JSON metadata for troubleshooting. **Off by default** — see [Privacy](#privacy) below before enabling |
+| **debug_audio_max_files** | `1`–`10000` | `100` | Oldest-first retention limit for saved debug audio files |
 
 ### Example Configuration
 
-For best accuracy:
+For best accuracy, using your Home Assistant vocabulary:
 ```yaml
 model: small
 language: de
 log_level: INFO
+use_ha_vocabulary: true
+keyterm_boost: 2.0
 ```
 
 For faster inference on slower hardware:
@@ -96,6 +109,25 @@ For faster inference on slower hardware:
 model: tiny
 language: de
 log_level: INFO
+```
+
+Adding your own keyterms on top of (or instead of) the Home Assistant vocabulary:
+```yaml
+model: small
+language: de
+use_ha_vocabulary: true
+extra_keyterms: "Wohnzimmer, Kaffeemaschine, Rolladen"
+keyterm_boost: 3.0
+```
+
+Troubleshooting a misrecognition (temporarily):
+```yaml
+model: small
+language: de
+log_level: DEBUG
+log_transcripts: true
+save_debug_audio: true
+debug_audio_max_files: 20
 ```
 
 ## Using with Home Assistant Assist
@@ -127,7 +159,33 @@ To test microphone input:
 | **Small** | 123M | ~200MB | 7.5% | Recommended for most setups |
 
 WER (Word Error Rate) figures are upstream-published values for German. Latency and
-real-time-factor have not been benchmarked for this add-on, so no numbers are given here.
+real-time-factor depend heavily on your own CPU, so no numbers are quoted here. If you
+want to measure real-time factor on your own hardware, use the bundled benchmark CLI:
+
+```bash
+python -m app.benchmark path/to/your-sample.wav --model small --language de
+```
+
+This runs locally against a real model and prints your own RTF — it is not run in CI and
+is not the source of any number in this README.
+
+## Privacy
+
+- **Transcripts are never logged by default** (`log_transcripts: false`). Enable it only
+  when you need to debug what was actually recognized.
+- **Performance logging never includes transcript text** — only a compact
+  model/duration/processing-time/RTF line.
+- **`use_ha_vocabulary` is strictly read-only.** It only issues
+  `config/*_registry/list` calls against the Home Assistant Core API to read Area,
+  Device, Entity, and Floor names for keyterm biasing. It never calls a service, changes
+  a state, or edits an entity/automation. If Home Assistant is unreachable, the add-on
+  logs a warning and keeps running with whatever keyterms it already has.
+- **`save_debug_audio` is off by default.** When enabled, it writes raw audio (WAV) plus
+  a JSON metadata file to `/data/debug_audio`. Metadata is limited to an explicit
+  allowlist (timestamp, model, language, transcript, duration, sample rate) — it never
+  contains a Home Assistant entity state. Files are excluded from HA backups
+  (`backup_exclude`) and pruned oldest-first once `debug_audio_max_files` is reached.
+  Only turn this on temporarily while troubleshooting.
 
 ## Troubleshooting
 
@@ -176,30 +234,36 @@ If transcription is slow:
 
 ## Roadmap
 
-### v0.1 (Current)
+### v0.1 / v0.1.1
 - ✅ Real-time streaming ASR
 - ✅ German language support
 - ✅ Tiny + Small models
 - ✅ CPU-only inference
 - ✅ Model caching
 - ✅ Home Assistant Assist integration
+- ✅ Verified Docker build + container smoke test
 
-### v0.2 (Planned)
-- [ ] Keyterms/context biasing
-- [ ] Partial transcript streaming
-- [ ] Performance metrics (latency, RTF)
-- [ ] Better logging
+### v0.1.2 (Current)
+- ✅ Automatic Home Assistant vocabulary import (Areas/Devices/Entities/Floors,
+  read-only, graceful degradation)
+- ✅ Manual `extra_keyterms` + verified `keyterm_boost`
+- ✅ Real Moonshine streaming parameters exposed as options (VAD threshold,
+  transcription interval, incomplete-line decoding)
+- ✅ Optional transcript logging, performance metrics logging, debug audio recording
+  (all privacy-conscious, off/limited by default)
+- ✅ Local RTF benchmark CLI
+- ✅ Real end-to-end Wyoming round-trip test with synthesized German audio in CI
+- ✅ Hardened session lifecycle (duplicate events, disconnects, concurrent sessions)
 
-### v0.3 (Future)
-- [ ] Automatic Home Assistant vocabulary import
-- [ ] Custom entity/area name recognition
+### v0.2 (Future)
+- [ ] Fine-tuning / adaptation on real usage data (explicitly out of scope for v0.1.2)
 - [ ] Device-specific adaptation
 
-### v0.4 (Future)
+### v0.3 (Future)
 - [ ] Integration with homeintent-stt dataset
-- [ ] Custom model benchmark
+- [ ] Custom model benchmark comparisons
 
-### v0.5 (Future)
+### v0.4 (Future)
 - [ ] Home Assistant domain-specific fine-tuned model
 
 ## Architecture

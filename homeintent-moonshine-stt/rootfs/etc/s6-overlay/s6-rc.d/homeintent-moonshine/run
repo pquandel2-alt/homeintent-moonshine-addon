@@ -11,6 +11,17 @@ export MOONSHINE_VOICE_CACHE=/data/models
 MODEL=$(bashio::config 'model')
 LANGUAGE=$(bashio::config 'language')
 LOG_LEVEL=$(bashio::config 'log_level')
+LOG_TRANSCRIPTS=$(bashio::config 'log_transcripts')
+LOG_PERFORMANCE=$(bashio::config 'log_performance')
+EXTRA_KEYTERMS=$(bashio::config 'extra_keyterms')
+KEYTERM_BOOST=$(bashio::config 'keyterm_boost')
+USE_HA_VOCABULARY=$(bashio::config 'use_ha_vocabulary')
+HA_VOCABULARY_REFRESH_MINUTES=$(bashio::config 'ha_vocabulary_refresh_minutes')
+TRANSCRIPTION_INTERVAL=$(bashio::config 'transcription_interval')
+VAD_THRESHOLD=$(bashio::config 'vad_threshold')
+DECODE_INCOMPLETE_LINES=$(bashio::config 'decode_incomplete_lines')
+SAVE_DEBUG_AUDIO=$(bashio::config 'save_debug_audio')
+DEBUG_AUDIO_MAX_FILES=$(bashio::config 'debug_audio_max_files')
 
 bashio::log.info "Starting HomeIntent Moonshine STT"
 bashio::log.info "Model: ${MODEL}"
@@ -20,18 +31,44 @@ bashio::log.info "Log Level: ${LOG_LEVEL}"
 # Build flags
 FLAGS=()
 
-# Add model
 FLAGS+=("--model" "${MODEL}")
-
-# Add language
 FLAGS+=("--language" "${LANGUAGE}")
-
-# Add port
 FLAGS+=("--port" "10300")
+FLAGS+=("--extra-keyterms" "${EXTRA_KEYTERMS}")
+FLAGS+=("--keyterm-boost" "${KEYTERM_BOOST}")
+FLAGS+=("--ha-vocabulary-refresh-minutes" "${HA_VOCABULARY_REFRESH_MINUTES}")
+FLAGS+=("--transcription-interval" "${TRANSCRIPTION_INTERVAL}")
+FLAGS+=("--vad-threshold" "${VAD_THRESHOLD}")
+FLAGS+=("--debug-audio-max-files" "${DEBUG_AUDIO_MAX_FILES}")
 
-# Add debug if needed
 if [ "${LOG_LEVEL}" = "DEBUG" ]; then
     FLAGS+=("--debug")
+fi
+
+if bashio::var.true "${LOG_TRANSCRIPTS}"; then
+    FLAGS+=("--log-transcripts")
+fi
+
+if bashio::var.true "${LOG_PERFORMANCE}"; then
+    FLAGS+=("--log-performance")
+else
+    FLAGS+=("--no-log-performance")
+fi
+
+if bashio::var.true "${USE_HA_VOCABULARY}"; then
+    FLAGS+=("--use-ha-vocabulary")
+else
+    FLAGS+=("--no-use-ha-vocabulary")
+fi
+
+if bashio::var.true "${DECODE_INCOMPLETE_LINES}"; then
+    FLAGS+=("--decode-incomplete-lines")
+else
+    FLAGS+=("--no-decode-incomplete-lines")
+fi
+
+if bashio::var.true "${SAVE_DEBUG_AUDIO}"; then
+    FLAGS+=("--save-debug-audio")
 fi
 
 # Run the application. cwd must be "/", not "/app": COPY app/ /app/ places the

@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.1.2] - 2026-09-17
+
+Home Assistant / smart-home optimization pass, ahead of the first real-hardware
+practice run.
+
+### Added
+- Home Assistant vocabulary biasing (`use_ha_vocabulary`, read-only, degrades
+  gracefully), manual `extra_keyterms`, and a verified `keyterm_boost`
+- Real Moonshine streaming parameters exposed as options (`vad_threshold`,
+  `decode_incomplete_lines`, `transcription_interval`)
+- Optional transcript logging (`log_transcripts`), performance logging
+  (`log_performance`), and debug audio recording (`save_debug_audio`) with
+  strict metadata allowlists and retention limits — all off/limited by default
+- Local RTF benchmark CLI (`app/benchmark.py`) and a real end-to-end Wyoming
+  round-trip test using self-synthesized German audio (no third-party audio
+  committed), run as its own CI job
+
+### Changed
+- Discovery readiness now uses s6's own service-readiness polling
+- Session lifecycle hardened against duplicate/overlapping events, client
+  disconnects, and mid-processing exceptions
+- Concurrent sessions on the same Transcriber are now serialized, since
+  moonshine-voice 0.1.5 does not document concurrent-call safety
+
+See `homeintent-moonshine-stt/CHANGELOG.md` and `ABSCHLUSSBERICHT_V0.1.2.md` for full details.
+
 ## [0.1.1] - 2026-09-17
 
 ### Fixed

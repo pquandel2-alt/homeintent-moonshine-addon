@@ -105,6 +105,24 @@ jobs:
           docker rm -f moonshine-test supervisor || true
           docker network rm moonshine-ci || true
 
+  e2e-audio-transcribe:
+    name: Real German audio E2E Wyoming round-trip
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - run: pip install pytest pytest-asyncio numpy moonshine-voice wyoming websockets==17.1
+
+      - name: Synthesize German audio, transcribe it, and check the result
+        run: |
+          cd homeintent-moonshine-stt
+          python3 -m pytest app/tests/test_e2e_transcribe.py -v -m e2e -rs
+
   build-aarch64:
     name: Build aarch64 image (QEMU, build-only)
     runs-on: ubuntu-latest

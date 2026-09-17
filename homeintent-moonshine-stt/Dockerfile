@@ -22,7 +22,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir \
     moonshine-voice==0.1.5 \
     wyoming==1.10.2 \
-    numpy==1.24.3
+    numpy==1.24.3 \
+    websockets==17.1
 
 # Copy application
 WORKDIR /app

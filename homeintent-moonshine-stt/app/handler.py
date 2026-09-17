@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import time
+from pathlib import Path
 
 from moonshine_voice import Transcriber
 from wyoming.asr import Transcript
@@ -12,6 +14,7 @@ from wyoming.info import AsrModel, AsrProgram, Attribution, Info
 from wyoming.server import AsyncEventHandler
 
 from app.audio import pcm_int16_to_float32, validate_audio_format
+from app.debug_audio import DEFAULT_DEBUG_AUDIO_DIR, save_debug_audio
 from app.models import get_model_info
 from app.streaming import MoonshineStreamingSession
 
@@ -45,6 +48,12 @@ class MoonshineAsrHandler(AsyncEventHandler):
         transcriber: Transcriber,
         model_name: str,
         language: str = "de",
+        log_transcripts: bool = False,
+        log_performance: bool = True,
+        save_debug_audio_enabled: bool = False,
+        debug_audio_max_files: int = 100,
+        debug_audio_dir: Path = DEFAULT_DEBUG_AUDIO_DIR,
+        moonshine_lock: asyncio.Lock | None = None,
     ):
         """Initialize handler.
 
@@ -54,14 +63,37 @@ class MoonshineAsrHandler(AsyncEventHandler):
             transcriber: The single Transcriber loaded once at add-on startup
             model_name: Model to use ("tiny" or "small")
             language: Language code ("de" for German)
+            log_transcripts: If True, log the recognized text at INFO. If
+                False (default), only log its length -- recognized speech is
+                privacy-sensitive and must not end up in logs unasked.
+            log_performance: If True, log a compact per-utterance timing
+                line (audio duration, finalize time, RTF). Never includes
+                transcript text.
+            save_debug_audio_enabled: If True, persist received audio (and a
+                metadata sidecar) to disk for debugging. Off by default --
+                see the README privacy note.
+            debug_audio_max_files: Retention limit enforced when debug audio
+                is enabled; oldest recordings are deleted beyond this count.
+            debug_audio_dir: Directory debug recordings are written to.
+            moonshine_lock: Lock shared across all handlers of the same
+                Transcriber, serializing native calls (see
+                app/streaming.py's MoonshineStreamingSession docstring for
+                why). Pass the same lock instance to every handler.
         """
         super().__init__(reader, writer)
         self._transcriber = transcriber
         self._model_name = model_name
         self._language = language
+        self._log_transcripts = log_transcripts
+        self._log_performance = log_performance
+        self._save_debug_audio_enabled = save_debug_audio_enabled
+        self._debug_audio_max_files = debug_audio_max_files
+        self._debug_audio_dir = debug_audio_dir
+        self._moonshine_lock = moonshine_lock
 
         self._session: MoonshineStreamingSession | None = None
         self._audio_rejected = False
+        self._raw_audio_buffer: bytearray | None = None
 
     async def handle_event(self, event: Event) -> bool:
         """Main event handler for Wyoming STT lifecycle.
@@ -95,7 +127,16 @@ class MoonshineAsrHandler(AsyncEventHandler):
 
         except Exception as e:
             _LOGGER.error(f"Error handling event {event.type}: {e}", exc_info=True)
+            self._close_session()
             return False
+
+    async def disconnect(self) -> None:
+        """Called by AsyncEventHandler.run() when the client disconnects.
+
+        Guarantees the native Moonshine stream is released even if the
+        client vanishes mid-utterance (no audio-stop ever arrives).
+        """
+        self._close_session()
 
     async def _handle_describe(self) -> None:
         """Respond to service discovery request."""
@@ -120,11 +161,16 @@ class MoonshineAsrHandler(AsyncEventHandler):
         info = Info(asr=[asr_program])
         await self.write_event(info.event())
 
-    def _reset_session(self) -> None:
-        """Reset for a new transcription request."""
+    def _close_session(self) -> None:
+        """Release the active session's native resources, if any. Idempotent."""
         if self._session is not None:
             self._session.close()
         self._session = None
+        self._raw_audio_buffer = None
+
+    def _reset_session(self) -> None:
+        """Reset for a new transcription request."""
+        self._close_session()
         self._audio_rejected = False
         _LOGGER.debug("Reset for new transcription")
 
@@ -146,7 +192,15 @@ class MoonshineAsrHandler(AsyncEventHandler):
             _LOGGER.error("Rejecting audio stream: %s", error)
             return
 
-        self._session = MoonshineStreamingSession(self._transcriber)
+        if self._session is not None:
+            _LOGGER.warning(
+                "Received audio-start while a session was already active; "
+                "closing the previous session first"
+            )
+            self._close_session()
+
+        self._session = MoonshineStreamingSession(self._transcriber, lock=self._moonshine_lock)
+        self._raw_audio_buffer = bytearray() if self._save_debug_audio_enabled else None
         await self._session.start()
 
         _LOGGER.debug(
@@ -173,18 +227,24 @@ class MoonshineAsrHandler(AsyncEventHandler):
         )
         if error is not None:
             self._audio_rejected = True
-            self._session.close()
-            self._session = None
+            self._close_session()
             await self.write_event(
                 WyomingError(text=error, code="unsupported_audio_format").event()
             )
             _LOGGER.error("Rejecting audio stream mid-stream: %s", error)
             return
 
+        if self._raw_audio_buffer is not None:
+            self._raw_audio_buffer.extend(chunk.audio)
+
         float32_audio = pcm_int16_to_float32(chunk.audio)
 
         # STREAMING: Feed immediately to Moonshine (not buffered)
-        await self._session.add_audio(list(float32_audio))
+        try:
+            await self._session.add_audio(list(float32_audio))
+        except Exception:
+            self._close_session()
+            raise
 
     async def _handle_audio_stop(self) -> None:
         """Handle audio stream end and send transcript."""
@@ -194,11 +254,42 @@ class MoonshineAsrHandler(AsyncEventHandler):
             _LOGGER.debug("Empty transcription")
             return
 
+        session = self._session
+        raw_audio = self._raw_audio_buffer
+        started = time.monotonic()
         try:
-            text = await self._session.finalize()
+            text = await session.finalize()
         finally:
-            self._session.close()
-            self._session = None
+            self._close_session()
+        finalize_time = time.monotonic() - started
 
         await self.write_event(Transcript(text=text, language=self._language).event())
-        _LOGGER.info(f"Transcript sent: '{text}'")
+
+        if self._log_transcripts:
+            _LOGGER.info("Transcript sent: '%s'", text)
+        else:
+            _LOGGER.info("Transcript sent (%d chars)", len(text))
+
+        if self._log_performance:
+            audio_duration = session.audio_duration_seconds
+            rtf = finalize_time / audio_duration if audio_duration > 0 else 0.0
+            _LOGGER.info(
+                "STT completed: model=%s audio=%.2fs finalize=%.2fs rtf=%.2f",
+                self._model_name,
+                audio_duration,
+                finalize_time,
+                rtf,
+            )
+
+        if self._save_debug_audio_enabled and raw_audio:
+            try:
+                save_debug_audio(
+                    bytes(raw_audio),
+                    model=self._model_name,
+                    language=self._language,
+                    transcript=text,
+                    directory=self._debug_audio_dir,
+                    max_files=self._debug_audio_max_files,
+                )
+            except OSError as err:
+                _LOGGER.error("Failed to save debug audio: %s", err)
