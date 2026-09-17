@@ -196,7 +196,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install pytest pytest-asyncio numpy==2.4.6 moonshine-voice wyoming websockets==17.1
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+      - run: pip install pytest pytest-asyncio numpy==2.4.6 moonshine-voice wyoming websockets==17.1 pocket-tts
 
       - name: Synthesize German audio, transcribe it, and check the result
         run: |
@@ -219,7 +220,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
       - run: pip install pytest pytest-asyncio wyoming pocket-tts
 
       - name: Synthesize German text with Pocket TTS and check the audio

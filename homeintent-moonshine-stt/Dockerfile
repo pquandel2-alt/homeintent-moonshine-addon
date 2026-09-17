@@ -21,18 +21,25 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Install Python packages.
 #
 # torch is installed FIRST and explicitly from PyTorch's own CPU-only wheel
-# index (--index-url, which REPLACES the default index rather than merely
-# adding to it -- an --extra-index-url alone was empirically found, while
-# developing this add-on, to still let pip's resolver pick PyPI's default
-# CUDA build here, pulling ~1GB of unused nvidia-* packages). Installing
-# pocket-tts afterwards then finds its own "torch>=2.5.0" requirement
-# already satisfied and never touches it again. Not version-pinned (unlike
-# the other packages here) because this sandbox's network policy blocks
-# download.pytorch.org, so a specific version available on that index could
-# not be verified here -- see ABSCHLUSSBERICHT_V0.2.0.md's TTS section.
+# index, given as --index-url (primary source) PLUS --extra-index-url
+# pointing back at PyPI (fallback for anything not hosted on PyTorch's
+# index, e.g. typing-extensions/filelock). A bare --extra-index-url-only
+# install was found, while developing this add-on, to let pip's resolver
+# pick PyPI's default CUDA build instead, pulling ~1GB of unused nvidia-*
+# packages -- but --index-url ALONE (no PyPI fallback) broke entirely in
+# real CI: PyTorch's index doesn't host plain-Python packages like
+# typing-extensions as wheels, so pip fell back to building it from an
+# sdist, whose build backend (flit_core) isn't on that index either,
+# failing the whole build (see ABSCHLUSSBERICHT_V0.2.1.md). This
+# index-url-primary + extra-index-url-fallback combination is what
+# actually keeps both properties: CPU-only torch, and every other
+# dependency still resolvable. Installing pocket-tts afterwards then finds
+# its own "torch>=2.5.0" requirement already satisfied and never touches
+# it again.
 RUN pip install --no-cache-dir \
     torch \
     --index-url https://download.pytorch.org/whl/cpu \
+    --extra-index-url https://pypi.org/simple \
     && pip install --no-cache-dir \
     moonshine-voice==0.1.5 \
     wyoming==1.10.2 \
