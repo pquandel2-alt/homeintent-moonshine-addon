@@ -54,21 +54,19 @@ jobs:
             -p 10300:10300 \
             homeintent-moonshine-stt:amd64-ci
 
-      - name: Wait for Wyoming port (real model download + s6 startup)
+      - name: Real Wyoming describe round trip (polls until server is actually ready)
         timeout-minutes: 8
         run: |
+          export PYTHONPATH=homeintent-moonshine-stt
           for i in $(seq 1 240); do
-            if (exec 3<>/dev/tcp/127.0.0.1/10300) 2>/dev/null; then
-              echo "Wyoming port open after ${i}s"
+            if python3 -m app.healthcheck; then
+              echo "Real Wyoming describe succeeded after ${i} attempt(s)"
               exit 0
             fi
             sleep 2
           done
-          echo "::error::Wyoming port never opened"
+          echo "::error::Wyoming server never answered a real describe request"
           exit 1
-
-      - name: Real Wyoming describe round trip
-        run: PYTHONPATH=homeintent-moonshine-stt python3 -m app.healthcheck
 
       - name: Container logs
         if: always()

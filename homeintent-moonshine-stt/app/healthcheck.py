@@ -30,7 +30,8 @@ async def check() -> bool:
 def main() -> int:
     try:
         ok = asyncio.run(check())
-    except (TimeoutError, OSError):
+    except (TimeoutError, OSError) as err:
+        print(f"healthcheck: {err}", file=sys.stderr)
         ok = False
     return 0 if ok else 1
 
