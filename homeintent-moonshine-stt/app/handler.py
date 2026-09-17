@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import time
 from pathlib import Path
 
 from moonshine_voice import Transcriber
@@ -256,12 +255,10 @@ class MoonshineAsrHandler(AsyncEventHandler):
 
         session = self._session
         raw_audio = self._raw_audio_buffer
-        started = time.monotonic()
         try:
             text = await session.finalize()
         finally:
             self._close_session()
-        finalize_time = time.monotonic() - started
 
         await self.write_event(Transcript(text=text, language=self._language).event())
 
@@ -272,11 +269,19 @@ class MoonshineAsrHandler(AsyncEventHandler):
 
         if self._log_performance:
             audio_duration = session.audio_duration_seconds
-            rtf = finalize_time / audio_duration if audio_duration > 0 else 0.0
+            # Real STT compute time: cumulative Moonshine processing during
+            # add_audio() (streaming ASR already transcribes incrementally
+            # as audio arrives) plus the final stop() pass -- NOT the wall
+            # time the Wyoming client spent streaming audio in, which is
+            # bounded by how long the user talked, not by model speed.
+            inference_time = session.inference_time_seconds
+            finalize_time = session.finalize_time_seconds
+            rtf = inference_time / audio_duration if audio_duration > 0 else 0.0
             _LOGGER.info(
-                "STT completed: model=%s audio=%.2fs finalize=%.2fs rtf=%.2f",
+                "STT completed: model=%s audio=%.2fs inference=%.2fs finalize=%.2fs rtf=%.2f",
                 self._model_name,
                 audio_duration,
+                inference_time,
                 finalize_time,
                 rtf,
             )

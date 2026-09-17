@@ -6,13 +6,17 @@ the "info" response rather than grepping raw bytes.
 """
 
 import asyncio
+import os
 import sys
 
 from wyoming.client import AsyncTcpClient
 from wyoming.info import Describe, Info
 
-HOST = "localhost"
-PORT = 10300
+HOST = os.environ.get("MOONSHINE_HEALTHCHECK_HOST", "localhost")
+# Overridable only for CI, where two add-on containers under test are
+# published on different host ports (10300, 10301) on the same runner; the
+# Docker HEALTHCHECK itself always runs inside the container at 10300.
+PORT = int(os.environ.get("MOONSHINE_HEALTHCHECK_PORT", "10300"))
 TIMEOUT = 5.0
 
 

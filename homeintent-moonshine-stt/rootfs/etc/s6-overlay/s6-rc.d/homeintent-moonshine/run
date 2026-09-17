@@ -7,21 +7,61 @@ set -e
 export PYTHONUNBUFFERED=1
 export MOONSHINE_VOICE_CACHE=/data/models
 
-# Parse configuration
-MODEL=$(bashio::config 'model')
-LANGUAGE=$(bashio::config 'language')
-LOG_LEVEL=$(bashio::config 'log_level')
-LOG_TRANSCRIPTS=$(bashio::config 'log_transcripts')
-LOG_PERFORMANCE=$(bashio::config 'log_performance')
-EXTRA_KEYTERMS=$(bashio::config 'extra_keyterms')
-KEYTERM_BOOST=$(bashio::config 'keyterm_boost')
-USE_HA_VOCABULARY=$(bashio::config 'use_ha_vocabulary')
-HA_VOCABULARY_REFRESH_MINUTES=$(bashio::config 'ha_vocabulary_refresh_minutes')
-TRANSCRIPTION_INTERVAL=$(bashio::config 'transcription_interval')
-VAD_THRESHOLD=$(bashio::config 'vad_threshold')
-DECODE_INCOMPLETE_LINES=$(bashio::config 'decode_incomplete_lines')
-SAVE_DEBUG_AUDIO=$(bashio::config 'save_debug_audio')
-DEBUG_AUDIO_MAX_FILES=$(bashio::config 'debug_audio_max_files')
+# Read a config option, falling back to a hard-coded default (matching
+# config.yaml's own default) whenever the Supervisor value is absent,
+# empty, or the literal string "null".
+#
+# This exists so an upgrade from an older add-on version -- where the
+# user's persisted options.json predates a newer config.yaml key -- or any
+# other situation where bashio::config resolves to an empty/null value
+# never turns into "--some-flag null" being handed to argparse (which
+# expects e.g. a float and would then crash the whole add-on on every
+# start). bashio::config itself supports a default-value second argument
+# on current versions; the explicit empty/"null" check below is a second,
+# independent safety net that does not depend on that behavior.
+config_or_default() {
+    local key="$1" default="$2" value
+    value=$(bashio::config "${key}" "${default}" 2>/dev/null || true)
+    if [ -z "${value}" ] || [ "${value}" = "null" ]; then
+        value="${default}"
+    fi
+    printf '%s' "${value}"
+}
+
+# Read a boolean config option the same way, additionally tolerating a
+# missing/null/empty value by falling back to the given default ("true" or
+# "false") before handing the result to bashio::var.true.
+config_bool_or_default() {
+    local key="$1" default="$2"
+    config_or_default "${key}" "${default}"
+}
+
+# Defaults below must match homeintent-moonshine-stt/config.yaml's `options:`
+# block exactly -- see app/tests/test_config_defaults.py, which fails CI if
+# they drift apart.
+MODEL=$(config_or_default 'model' 'small')
+LANGUAGE=$(config_or_default 'language' 'de')
+LOG_LEVEL=$(config_or_default 'log_level' 'INFO')
+LOG_TRANSCRIPTS=$(config_bool_or_default 'log_transcripts' 'false')
+LOG_PERFORMANCE=$(config_bool_or_default 'log_performance' 'true')
+EXTRA_KEYTERMS=$(bashio::config 'extra_keyterms' '' 2>/dev/null || true)
+KEYTERM_BOOST=$(config_or_default 'keyterm_boost' '2.0')
+USE_HA_VOCABULARY=$(config_bool_or_default 'use_ha_vocabulary' 'true')
+HA_VOCABULARY_REFRESH_MINUTES=$(config_or_default 'ha_vocabulary_refresh_minutes' '30')
+TRANSCRIPTION_INTERVAL=$(config_or_default 'transcription_interval' '0.5')
+VAD_THRESHOLD=$(config_or_default 'vad_threshold' '0.5')
+DECODE_INCOMPLETE_LINES=$(config_bool_or_default 'decode_incomplete_lines' 'true')
+SAVE_DEBUG_AUDIO=$(config_bool_or_default 'save_debug_audio' 'false')
+DEBUG_AUDIO_MAX_FILES=$(config_or_default 'debug_audio_max_files' '100')
+
+# EXTRA_KEYTERMS is a free-text field; "null" is a legitimate (if unlikely)
+# keyterm-list entry only if a user literally typed it, but an *absent*
+# option must not become the four-character string "null" and get passed
+# to the transcriber. bashio::config's own default already covers "absent";
+# this only strips a literal empty-after-default case.
+if [ "${EXTRA_KEYTERMS}" = "null" ]; then
+    EXTRA_KEYTERMS=""
+fi
 
 bashio::log.info "Starting HomeIntent Moonshine STT"
 bashio::log.info "Model: ${MODEL}"

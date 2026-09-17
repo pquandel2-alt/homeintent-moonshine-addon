@@ -8,6 +8,7 @@ of them reuse the single model already loaded into the shared Transcriber.
 
 import asyncio
 import logging
+import time
 
 from moonshine_voice import (
     Error,
@@ -81,6 +82,24 @@ class MoonshineStreamingSession:
         self._stream.add_listener(self._collector)
         self._lock = lock if lock is not None else asyncio.Lock()
         self.audio_duration_seconds = 0.0
+        # Cumulative wall time actually spent inside the native
+        # add_audio()/stop() calls (see add_audio()/finalize() below) --
+        # this is real Moonshine/CPU processing time, not the time the
+        # Wyoming client spent streaming audio in (which is bounded by how
+        # long the user was talking, not by how long the model took).
+        self._add_audio_time_seconds = 0.0
+        self.finalize_time_seconds = 0.0
+
+    @property
+    def inference_time_seconds(self) -> float:
+        """Total native Moonshine compute time: add_audio() calls + stop().
+
+        Moonshine already does most of its transcription work incrementally
+        during add_audio() (that's the point of streaming ASR), so this is
+        NOT just how long the final stop()/finalize pass took -- it is the
+        sum of every add_audio() call's own processing time plus stop()'s.
+        """
+        return self._add_audio_time_seconds + self.finalize_time_seconds
 
     async def start(self) -> None:
         """Start the underlying stream."""
@@ -90,7 +109,9 @@ class MoonshineStreamingSession:
     async def add_audio(self, samples: list[float], sample_rate: int = 16000) -> None:
         """Feed one chunk of float32 PCM audio into the stream immediately."""
         async with self._lock:
+            started = time.monotonic()
             await asyncio.to_thread(self._stream.add_audio, samples, sample_rate)
+            self._add_audio_time_seconds += time.monotonic() - started
         self.audio_duration_seconds += len(samples) / sample_rate
 
     async def finalize(self) -> str:
@@ -98,10 +119,14 @@ class MoonshineStreamingSession:
 
         Stream.stop() runs a final synchronous update_transcription() pass
         before returning, so every LineCompleted event has already fired by
-        the time this coroutine resumes.
+        the time this coroutine resumes. The time that pass itself took is
+        recorded in ``finalize_time_seconds`` (also folded into
+        ``inference_time_seconds``) for performance logging.
         """
         async with self._lock:
+            started = time.monotonic()
             await asyncio.to_thread(self._stream.stop)
+            self.finalize_time_seconds = time.monotonic() - started
         if self._collector.error is not None:
             raise self._collector.error
         return self._collector.text

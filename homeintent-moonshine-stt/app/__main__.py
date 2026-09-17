@@ -122,22 +122,50 @@ async def _refresh_ha_vocabulary_periodically(
     transcriber: object,
     manual_keyterms: list[str],
     interval_minutes: int,
+    last_known_good_terms: list[str],
+    moonshine_lock: asyncio.Lock,
 ) -> None:
     """Reload HA vocabulary every ``interval_minutes`` and re-apply keyterms.
 
     Runs only while use_ha_vocabulary is enabled and interval_minutes > 0.
-    Errors are swallowed by fetch_ha_vocabulary() itself (returns []), so a
-    transient HA outage just means the next refresh keeps last-known terms.
+
+    Last-known-good handling: a *failed* refresh (unreachable HA, timeout,
+    auth error, ...) must not wipe out a previously working HA vocabulary --
+    it keeps using ``last_known_good_terms`` unchanged and does not touch
+    the transcriber at all. Only a *successful* fetch (which may legitimately
+    return an empty term list, e.g. no areas/devices/entities configured)
+    replaces it. See HaVocabularyResult's docstring in app/ha_vocabulary.py.
+
+    ``last_known_good_terms`` is mutated in place (list passed by the
+    caller) so the caller's copy always reflects the latest successful
+    fetch, matching how it was seeded from the initial startup fetch.
+
+    Every native call into the shared Moonshine transcriber -- including
+    set_keyterms(), not just the streaming Start/AddAudio/Stop calls in
+    app/streaming.py -- is serialized through the same ``moonshine_lock``
+    passed in from app/__main__.py's main(), since moonshine-voice 0.1.5
+    does not document set_keyterms() as safe to call concurrently with
+    other native calls on the same Transcriber.
     """
     while True:
         await asyncio.sleep(interval_minutes * 60)
-        ha_terms = await fetch_ha_vocabulary()
-        effective = merge_keyterms(ha_terms, manual_keyterms)
-        if effective:
-            transcriber.set_keyterms(effective)  # type: ignore[attr-defined]
-            _LOGGER.info(
-                "Refreshed Home Assistant vocabulary: effective keyterms=%d", len(effective)
+        result = await fetch_ha_vocabulary()
+        if not result.success:
+            _LOGGER.warning(
+                "HA vocabulary refresh failed; keeping last-known-good vocabulary (%d term(s))",
+                len(last_known_good_terms),
             )
+            continue
+
+        last_known_good_terms[:] = result.terms
+        effective = merge_keyterms(last_known_good_terms, manual_keyterms)
+        async with moonshine_lock:
+            await asyncio.to_thread(transcriber.set_keyterms, effective)  # type: ignore[attr-defined]
+        _LOGGER.info(
+            "Refreshed Home Assistant vocabulary: ha_terms=%d effective keyterms=%d",
+            len(last_known_good_terms),
+            len(effective),
+        )
 
 
 def _validate_args(args: argparse.Namespace) -> bool:
@@ -158,16 +186,20 @@ def _resolve_keyterms(args: argparse.Namespace) -> tuple[list[str], list[str]]:
     """Parse manual keyterms and fetch HA vocabulary (if enabled).
 
     Returns (manual_keyterms, ha_terms). Never raises: an unreachable HA
-    instance just means an empty ha_terms list (see fetch_ha_vocabulary()).
+    instance just means an empty ha_terms list -- there is no previous
+    last-known-good vocabulary yet at startup, so a failed initial fetch
+    can only fall back to "no HA terms" (see fetch_ha_vocabulary() /
+    HaVocabularyResult).
     """
     manual_keyterms = parse_extra_keyterms(args.extra_keyterms)
     ha_terms: list[str] = []
     if args.use_ha_vocabulary:
         try:
-            ha_terms = asyncio.run(fetch_ha_vocabulary())
+            result = asyncio.run(fetch_ha_vocabulary())
+            if result.success:
+                ha_terms = result.terms
         except Exception as e:
             _LOGGER.warning("HA vocabulary unavailable (%s), continuing without HA vocabulary", e)
-            ha_terms = []
     return manual_keyterms, ha_terms
 
 
@@ -185,7 +217,9 @@ def _log_startup_banner(
     _LOGGER.info("model cache=%s", DEFAULT_MODEL_CACHE_DIR)
 
 
-def _build_handler_factory(args: argparse.Namespace, transcriber: object) -> partial:  # type: ignore[type-arg]
+def _build_handler_factory(
+    args: argparse.Namespace, transcriber: object, moonshine_lock: asyncio.Lock
+) -> partial:  # type: ignore[type-arg]
     return partial(
         MoonshineAsrHandler,
         transcriber=transcriber,
@@ -196,12 +230,19 @@ def _build_handler_factory(args: argparse.Namespace, transcriber: object) -> par
         save_debug_audio_enabled=args.save_debug_audio,
         debug_audio_max_files=args.debug_audio_max_files,
         debug_audio_dir=DEFAULT_DEBUG_AUDIO_DIR,
-        moonshine_lock=asyncio.Lock(),
+        moonshine_lock=moonshine_lock,
     )
 
 
-def _load_and_bias_transcriber(args: argparse.Namespace) -> tuple[object, list[str]] | None:
-    """Load the transcriber and apply keyterm biasing. Returns None on failure."""
+def _load_and_bias_transcriber(
+    args: argparse.Namespace,
+) -> tuple[object, list[str], list[str]] | None:
+    """Load the transcriber and apply keyterm biasing. Returns None on failure.
+
+    Returns (transcriber, manual_keyterms, ha_terms) so the caller can seed
+    the periodic refresh loop's last-known-good HA vocabulary with exactly
+    what was actually applied at startup.
+    """
     try:
         transcriber = load_transcriber(
             model=args.model,
@@ -221,7 +262,7 @@ def _load_and_bias_transcriber(args: argparse.Namespace) -> tuple[object, list[s
         transcriber.set_keyterms(effective_keyterms)
 
     _log_startup_banner(args, manual_keyterms, effective_keyterms)
-    return transcriber, manual_keyterms
+    return transcriber, manual_keyterms, ha_terms
 
 
 def main() -> int:
@@ -242,18 +283,28 @@ def main() -> int:
     loaded = _load_and_bias_transcriber(args)
     if loaded is None:
         return 1
-    transcriber, manual_keyterms = loaded
+    transcriber, manual_keyterms, initial_ha_terms = loaded
 
-    handler_factory = _build_handler_factory(args, transcriber)
+    # One lock shared by every Wyoming connection's handler (native
+    # start/add_audio/stop calls, see app/streaming.py) AND the periodic HA
+    # vocabulary refresh's set_keyterms() call -- all native calls into the
+    # same Moonshine Transcriber must be serialized consistently.
+    moonshine_lock = asyncio.Lock()
+    handler_factory = _build_handler_factory(args, transcriber, moonshine_lock)
     server = AsyncTcpServer(args.host, args.port)
     _LOGGER.info(f"Starting Wyoming server on {args.host}:{args.port}")
 
     async def run_server() -> None:
         refresh_task: asyncio.Task[None] | None = None
         if args.use_ha_vocabulary and args.ha_vocabulary_refresh_minutes > 0:
+            last_known_good_terms = list(initial_ha_terms)
             refresh_task = asyncio.create_task(
                 _refresh_ha_vocabulary_periodically(
-                    transcriber, manual_keyterms, args.ha_vocabulary_refresh_minutes
+                    transcriber,
+                    manual_keyterms,
+                    args.ha_vocabulary_refresh_minutes,
+                    last_known_good_terms,
+                    moonshine_lock,
                 )
             )
         try:

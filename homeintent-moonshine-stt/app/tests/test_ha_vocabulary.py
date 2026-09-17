@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from app.ha_vocabulary import (
+    HaVocabularyResult,
     clean_term,
     dedupe_preserve_order,
     extract_vocabulary_terms,
@@ -104,6 +105,203 @@ class TestExtractVocabularyTerms:
         assert extract_vocabulary_terms(areas, [], []) == ["Bad"]
 
 
+class TestAreaEntityCombinationTerms:
+    """A5 review fix: "Area Entity" combination terms from real, known HA
+    Entity->Area / Entity->Device->Area relationships only."""
+
+    def test_entity_direct_area_id_produces_combination(self):
+        areas = [{"area_id": "living_room", "name": "Wohnzimmer", "aliases": []}]
+        entities = [
+            {
+                "entity_id": "cover.wohnzimmer_rolllade",
+                "area_id": "living_room",
+                "device_id": None,
+                "name": "Rolllade",
+                "original_name": None,
+            }
+        ]
+        terms = extract_vocabulary_terms(areas, [], entities)
+        assert "Wohnzimmer Rolllade" in terms
+
+    def test_entity_inherits_area_from_device(self):
+        areas = [{"area_id": "kitchen", "name": "Küche", "aliases": []}]
+        devices = [{"id": "dev1", "area_id": "kitchen", "name": "Shelly", "name_by_user": None}]
+        entities = [
+            {
+                "entity_id": "binary_sensor.kueche_fenster",
+                "area_id": None,
+                "device_id": "dev1",
+                "name": "Fenster",
+                "original_name": None,
+            }
+        ]
+        terms = extract_vocabulary_terms(areas, devices, entities)
+        assert "Küche Fenster" in terms
+
+    def test_realistic_multi_room_registry(self):
+        """Wohnzimmer: Rolllade, Deckenlampe, Fenster / Küche: Fenster,
+        Deckenlampe / Schlafzimmer: Heizung / Garage: Licht."""
+        areas = [
+            {"area_id": "living_room", "name": "Wohnzimmer", "aliases": []},
+            {"area_id": "kitchen", "name": "Küche", "aliases": []},
+            {"area_id": "bedroom", "name": "Schlafzimmer", "aliases": []},
+            {"area_id": "garage", "name": "Garage", "aliases": []},
+        ]
+        devices = [
+            {"id": "dev_lr", "area_id": "living_room", "name": "Dev", "name_by_user": None},
+            {"id": "dev_kitchen", "area_id": "kitchen", "name": "Dev", "name_by_user": None},
+        ]
+        entities = [
+            {
+                "entity_id": "cover.rolllade",
+                "area_id": "living_room",
+                "device_id": None,
+                "name": "Rolllade",
+                "original_name": None,
+            },
+            {
+                "entity_id": "light.deckenlampe_wz",
+                "area_id": None,
+                "device_id": "dev_lr",
+                "name": "Deckenlampe",
+                "original_name": None,
+            },
+            {
+                "entity_id": "binary_sensor.fenster_wz",
+                "area_id": "living_room",
+                "device_id": None,
+                "name": "Fenster",
+                "original_name": None,
+            },
+            {
+                "entity_id": "binary_sensor.fenster_kueche",
+                "area_id": None,
+                "device_id": "dev_kitchen",
+                "name": "Fenster",
+                "original_name": None,
+            },
+            {
+                "entity_id": "light.deckenlampe_kueche",
+                "area_id": "kitchen",
+                "device_id": None,
+                "name": "Deckenlampe",
+                "original_name": None,
+            },
+            {
+                "entity_id": "climate.heizung_sz",
+                "area_id": "bedroom",
+                "device_id": None,
+                "name": "Heizung",
+                "original_name": None,
+            },
+            {
+                "entity_id": "light.garage",
+                "area_id": "garage",
+                "device_id": None,
+                "name": "Licht",
+                "original_name": None,
+            },
+        ]
+
+        terms = extract_vocabulary_terms(areas, devices, entities)
+
+        for expected in (
+            "Wohnzimmer Rolllade",
+            "Wohnzimmer Deckenlampe",
+            "Wohnzimmer Fenster",
+            "Küche Fenster",
+            "Küche Deckenlampe",
+            "Schlafzimmer Heizung",
+            "Garage Licht",
+        ):
+            assert expected in terms
+
+    def test_entity_without_any_area_produces_no_combination(self):
+        areas = [{"area_id": "living_room", "name": "Wohnzimmer", "aliases": []}]
+        entities = [
+            {
+                "entity_id": "sensor.unassigned",
+                "area_id": None,
+                "device_id": None,
+                "name": "Unbekannt",
+                "original_name": None,
+            }
+        ]
+        terms = extract_vocabulary_terms(areas, [], entities)
+        assert not any(t.startswith("Wohnzimmer ") for t in terms)
+
+    def test_entity_domain_never_used_as_a_word(self):
+        areas = [{"area_id": "living_room", "name": "Wohnzimmer", "aliases": []}]
+        entities = [
+            {
+                "entity_id": "binary_sensor.wohnzimmer_deckenlampe",
+                "area_id": "living_room",
+                "device_id": None,
+                "name": None,
+                "original_name": None,
+            }
+        ]
+        terms = extract_vocabulary_terms(areas, [], entities)
+        assert not any("binary_sensor" in t.casefold() for t in terms)
+        assert not any("sensor" in t.casefold() for t in terms)
+
+    def test_no_redundant_duplicate_when_entity_name_already_has_area_prefix(self):
+        areas = [{"area_id": "living_room", "name": "Wohnzimmer", "aliases": []}]
+        entities = [
+            {
+                "entity_id": "light.wz_lampe",
+                "area_id": "living_room",
+                "device_id": None,
+                "name": "Wohnzimmer Lampe",
+                "original_name": None,
+            }
+        ]
+        terms = extract_vocabulary_terms(areas, [], entities)
+        assert "Wohnzimmer Wohnzimmer Lampe" not in terms
+
+    def test_combination_terms_are_deterministically_sorted(self):
+        areas = [{"area_id": "a", "name": "Zimmer", "aliases": []}]
+        entities = [
+            {"entity_id": f"light.{i}", "area_id": "a", "device_id": None, "name": name}
+            for i, name in enumerate(["Zebra", "Anna", "Mitte"])
+        ]
+        from app.ha_vocabulary import _area_entity_combination_terms
+
+        combos = _area_entity_combination_terms(areas, [], entities)
+        assert combos == sorted(combos, key=str.casefold)
+
+    def test_combination_terms_capped_at_maximum(self):
+        from app.ha_vocabulary import MAX_COMBINATION_TERMS, _area_entity_combination_terms
+
+        areas = [{"area_id": "a", "name": "Zimmer", "aliases": []}]
+        entities = [
+            {"entity_id": f"light.e{i}", "area_id": "a", "device_id": None, "name": f"Ding{i}"}
+            for i in range(MAX_COMBINATION_TERMS + 50)
+        ]
+        combos = _area_entity_combination_terms(areas, [], entities)
+        assert len(combos) == MAX_COMBINATION_TERMS
+
+    def test_no_area_relationship_means_no_combinatorial_guessing(self):
+        """Multiple areas and multiple unrelated entities must never be
+        cross-combined -- only real, known relationships produce terms."""
+        areas = [
+            {"area_id": "a", "name": "Wohnzimmer", "aliases": []},
+            {"area_id": "b", "name": "Küche", "aliases": []},
+        ]
+        entities = [
+            {
+                "entity_id": "light.x",
+                "area_id": None,
+                "device_id": None,
+                "name": "Deckenlampe",
+                "original_name": None,
+            }
+        ]
+        terms = extract_vocabulary_terms(areas, [], entities)
+        assert "Wohnzimmer Deckenlampe" not in terms
+        assert "Küche Deckenlampe" not in terms
+
+
 class _FakeWebSocket:
     """Stands in for a websockets ClientConnection in tests."""
 
@@ -130,16 +328,18 @@ def _command_response(command_id: int, result: list[dict[str, Any]]) -> dict[str
 
 class TestFetchHaVocabulary:
     @pytest.mark.asyncio
-    async def test_no_token_returns_empty_list(self, monkeypatch):
+    async def test_no_token_returns_failed_result(self, monkeypatch):
         monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
-        assert await fetch_ha_vocabulary(token=None) == []
+        result = await fetch_ha_vocabulary(token=None)
+        assert result == HaVocabularyResult(success=False, terms=[])
 
     @pytest.mark.asyncio
-    async def test_websockets_missing_returns_empty_list(self, monkeypatch):
+    async def test_websockets_missing_returns_failed_result(self, monkeypatch):
         import app.ha_vocabulary as mod
 
         monkeypatch.setattr(mod, "websockets", None)
-        assert await fetch_ha_vocabulary(token="abc") == []
+        result = await fetch_ha_vocabulary(token="abc")
+        assert result == HaVocabularyResult(success=False, terms=[])
 
     @pytest.mark.asyncio
     async def test_successful_fetch_returns_merged_terms(self, monkeypatch):
@@ -161,12 +361,41 @@ class TestFetchHaVocabulary:
 
         monkeypatch.setattr(mod, "websockets", _FakeWebsocketsModule())
 
-        terms = await fetch_ha_vocabulary(token="abc")
+        result = await fetch_ha_vocabulary(token="abc")
 
-        assert terms == ["Wohnzimmer", "Erdgeschoss", "Küche", "Deckenlampe"]
+        assert result.success is True
+        assert result.terms == ["Wohnzimmer", "Erdgeschoss", "Küche", "Deckenlampe"]
 
     @pytest.mark.asyncio
-    async def test_auth_failure_returns_empty_list(self, monkeypatch):
+    async def test_successful_fetch_with_no_registry_entries_is_success_not_failure(
+        self, monkeypatch
+    ):
+        """A legitimately empty HA (no areas/devices/entities) must be
+        distinguishable from a failed fetch -- see HaVocabularyResult."""
+        import app.ha_vocabulary as mod
+
+        script = [
+            {"type": "auth_required"},
+            {"type": "auth_ok"},
+            _command_response(1, []),
+            _command_response(2, []),
+            _command_response(3, []),
+            _command_response(4, []),
+        ]
+        fake_ws = _FakeWebSocket(script)
+
+        class _FakeWebsocketsModule:
+            def connect(self, url: str, open_timeout: float | None = None) -> _FakeWebSocket:
+                return fake_ws
+
+        monkeypatch.setattr(mod, "websockets", _FakeWebsocketsModule())
+
+        result = await fetch_ha_vocabulary(token="abc")
+
+        assert result == HaVocabularyResult(success=True, terms=[])
+
+    @pytest.mark.asyncio
+    async def test_auth_failure_returns_failed_result(self, monkeypatch):
         import app.ha_vocabulary as mod
 
         script = [{"type": "auth_required"}, {"type": "auth_invalid"}]
@@ -178,10 +407,11 @@ class TestFetchHaVocabulary:
 
         monkeypatch.setattr(mod, "websockets", _FakeWebsocketsModule())
 
-        assert await fetch_ha_vocabulary(token="abc") == []
+        result = await fetch_ha_vocabulary(token="abc")
+        assert result == HaVocabularyResult(success=False, terms=[])
 
     @pytest.mark.asyncio
-    async def test_connection_error_returns_empty_list_not_raises(self, monkeypatch):
+    async def test_connection_error_returns_failed_result_not_raises(self, monkeypatch):
         import app.ha_vocabulary as mod
 
         class _FailingWebsocketsModule:
@@ -190,7 +420,8 @@ class TestFetchHaVocabulary:
 
         monkeypatch.setattr(mod, "websockets", _FailingWebsocketsModule())
 
-        assert await fetch_ha_vocabulary(token="abc") == []
+        result = await fetch_ha_vocabulary(token="abc")
+        assert result == HaVocabularyResult(success=False, terms=[])
 
     @pytest.mark.asyncio
     async def test_missing_floor_registry_command_is_tolerated(self, monkeypatch):
@@ -218,6 +449,6 @@ class TestFetchHaVocabulary:
 
         monkeypatch.setattr(mod, "websockets", _FakeWebsocketsModule())
 
-        terms = await fetch_ha_vocabulary(token="abc")
+        result = await fetch_ha_vocabulary(token="abc")
 
-        assert terms == ["Wohnzimmer"]
+        assert result == HaVocabularyResult(success=True, terms=["Wohnzimmer"])

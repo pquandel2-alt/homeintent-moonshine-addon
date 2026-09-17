@@ -44,6 +44,7 @@ jobs:
           docker network create moonshine-ci
           docker run -d --name supervisor --network moonshine-ci \
             -v "${GITHUB_WORKSPACE}/.github/ci/fake_supervisor.py:/fake_supervisor.py:ro" \
+            -v "${GITHUB_WORKSPACE}/homeintent-moonshine-stt/config.yaml:/config.yaml:ro" \
             -e CI_MODEL=tiny \
             python:3.11-slim python3 /fake_supervisor.py
 
@@ -104,6 +105,79 @@ jobs:
         run: |
           docker rm -f moonshine-test supervisor || true
           docker network rm moonshine-ci || true
+
+      - name: Create isolated network with an upgrade-simulating fake Supervisor API
+        run: |
+          # Simulates upgrading from an old add-on version whose persisted
+          # options.json predates several newer config.yaml options (they
+          # are simply absent from the Supervisor response bashio::config
+          # sees), plus two options a partially-migrated config left as
+          # JSON null. Regression test for the bug where the run script
+          # forwarded an unset/null value straight to argparse (e.g.
+          # "--keyterm-boost null") and crashed the whole add-on on every
+          # start (see ABSCHLUSSBERICHT_V0.1.2.md).
+          docker network create moonshine-ci-upgrade
+          docker run -d --name supervisor-upgrade --network moonshine-ci-upgrade \
+            -v "${GITHUB_WORKSPACE}/.github/ci/fake_supervisor.py:/fake_supervisor.py:ro" \
+            -v "${GITHUB_WORKSPACE}/homeintent-moonshine-stt/config.yaml:/config.yaml:ro" \
+            -e CI_MODEL=tiny \
+            -e CI_OMIT_OPTIONS="log_performance,use_ha_vocabulary,ha_vocabulary_refresh_minutes,transcription_interval,decode_incomplete_lines,save_debug_audio,debug_audio_max_files" \
+            -e CI_NULL_OPTIONS="keyterm_boost,vad_threshold" \
+            python:3.11-slim python3 /fake_supervisor.py
+
+      - name: Wait for the upgrade-simulating fake Supervisor to accept connections
+        run: |
+          for i in $(seq 1 30); do
+            if docker exec supervisor-upgrade python3 -c "
+          import urllib.request
+          urllib.request.urlopen('http://localhost/addons/self/options/config', timeout=2)
+          " 2>/dev/null; then
+              echo "Upgrade-simulating fake Supervisor ready after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Upgrade-simulating fake Supervisor stub never became ready"
+          docker logs supervisor-upgrade || true
+          exit 1
+
+      - name: Start add-on container against the upgrade-simulating Supervisor
+        run: |
+          docker run -d --name moonshine-test-upgrade --network moonshine-ci-upgrade \
+            -e SUPERVISOR_TOKEN=ci-test-token \
+            -p 10301:10300 \
+            homeintent-moonshine-stt:amd64-ci
+
+      - name: Real Wyoming describe round trip against the upgrade-simulating add-on
+        timeout-minutes: 8
+        run: |
+          export PYTHONPATH=homeintent-moonshine-stt
+          export MOONSHINE_HEALTHCHECK_PORT=10301
+          for i in $(seq 1 240); do
+            if python3 -m app.healthcheck; then
+              echo "Real Wyoming describe succeeded after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Add-on with missing/null options never came up (upgrade-safety regression)"
+          exit 1
+
+      - name: Upgrade-simulating container logs
+        if: always()
+        run: |
+          echo "::group::moonshine-test-upgrade logs"
+          docker logs moonshine-test-upgrade || true
+          echo "::endgroup::"
+          echo "::group::supervisor-upgrade stub logs"
+          docker logs supervisor-upgrade || true
+          echo "::endgroup::"
+
+      - name: Clean up upgrade-simulating containers
+        if: always()
+        run: |
+          docker rm -f moonshine-test-upgrade supervisor-upgrade || true
+          docker network rm moonshine-ci-upgrade || true
 
   e2e-audio-transcribe:
     name: Real German audio E2E Wyoming round-trip

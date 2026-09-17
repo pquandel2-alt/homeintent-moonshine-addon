@@ -33,6 +33,12 @@ ignore_missing_imports = true
 module = "app.tests.*"
 disallow_untyped_defs = false
 
+[[tool.mypy.overrides]]
+# PyYAML is only used by CI-only test helpers (verifying the fake
+# Supervisor stub against config.yaml), never by the shipped add-on itself.
+module = "yaml"
+ignore_missing_imports = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

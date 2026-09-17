@@ -1,5 +1,7 @@
 """Tests for Moonshine streaming session management."""
 
+import time
+
 import pytest
 from moonshine_voice import Error, LineCompleted, TranscriptLine
 
@@ -120,3 +122,60 @@ class TestMoonshineStreamingSession:
         session.close()
 
         mock_stream.close.assert_called_once()
+
+
+class TestRealInferenceTiming:
+    """A2 review fix: RTF must reflect real Moonshine compute time, not the
+    wall time the Wyoming client spent streaming audio in."""
+
+    @pytest.mark.asyncio
+    async def test_inference_time_accumulates_across_add_audio_calls(
+        self, mock_transcriber, mock_stream
+    ):
+        def slow_add_audio(_samples, _rate):
+            time.sleep(0.02)
+
+        mock_stream.add_audio.side_effect = slow_add_audio
+        session = MoonshineStreamingSession(mock_transcriber)
+
+        await session.add_audio([0.0] * 100)
+        await session.add_audio([0.0] * 100)
+
+        # Two ~20ms native calls: cumulative, not just the last one.
+        assert session.inference_time_seconds >= 0.03
+        # finalize() has not run yet, so it must be 0 -- not folded in early.
+        assert session.finalize_time_seconds == 0.0
+
+    @pytest.mark.asyncio
+    async def test_finalize_time_is_folded_into_inference_time(self, mock_transcriber, mock_stream):
+        def slow_stop():
+            time.sleep(0.02)
+
+        mock_stream.stop.side_effect = slow_stop
+        session = MoonshineStreamingSession(mock_transcriber)
+
+        await session.finalize()
+
+        assert session.finalize_time_seconds >= 0.015
+        assert session.inference_time_seconds == pytest.approx(
+            session.finalize_time_seconds, abs=0.005
+        )
+
+    @pytest.mark.asyncio
+    async def test_inference_time_excludes_wyoming_stream_wait(self, mock_transcriber, mock_stream):
+        """Time spent awaiting audio from the Wyoming client between chunks
+        must never be counted as inference time -- only add_audio()/stop()
+        themselves are timed."""
+        session = MoonshineStreamingSession(mock_transcriber)
+
+        await session.add_audio([0.0] * 100)
+        # Simulate a long pause where the *user* is talking slowly, i.e.
+        # time the session is simply not doing anything -- not measured.
+        import asyncio
+
+        await asyncio.sleep(0.05)
+        await session.add_audio([0.0] * 100)
+
+        # Both add_audio() calls used an instant mock, so inference time
+        # must stay near zero despite the 50ms real-world gap between them.
+        assert session.inference_time_seconds < 0.01
