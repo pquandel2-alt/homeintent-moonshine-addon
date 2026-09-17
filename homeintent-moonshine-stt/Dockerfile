@@ -12,7 +12,6 @@ RUN apt-get update \
         python${PYTHON_VERSION}-venv \
         python${PYTHON_VERSION}-dev \
         build-essential \
-        netcat-traditional \
     && rm -rf /var/lib/apt/lists/*
 
 # Create virtual environment
@@ -36,8 +35,8 @@ COPY rootfs /
 # Set environment for model caching (see moonshine_voice.download_file.get_cache_dir)
 ENV MOONSHINE_VOICE_CACHE=/data/models
 
-# Health check
+# Health check: real Wyoming describe round-trip, not a raw-byte grep (see app/healthcheck.py)
 HEALTHCHECK --start-period=60s --interval=30s --timeout=20s \
-    CMD echo '{"type": "describe"}' | nc -w 1 localhost 10300 | grep -q "homeintent-moonshine" || exit 1
+    CMD python3 -m app.healthcheck || exit 1
 
 ENTRYPOINT ["/init"]

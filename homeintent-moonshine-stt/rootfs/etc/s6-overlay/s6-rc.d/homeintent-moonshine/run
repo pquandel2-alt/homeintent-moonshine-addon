@@ -34,6 +34,7 @@ if [ "${LOG_LEVEL}" = "DEBUG" ]; then
     FLAGS+=("--debug")
 fi
 
-# Run the application
-cd /app
+# Run the application. cwd must be "/", not "/app": COPY app/ /app/ places the
+# "app" package directly at /app, so "-m app" needs /app's *parent* on sys.path.
+cd /
 exec python3 -m app "${FLAGS[@]}"

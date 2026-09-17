@@ -40,7 +40,9 @@ _MODEL_ARCH = {
 # under the non-commercial Moonshine Community License." (confirmed by
 # running the real download against language="de"). Only Moonshine's
 # English models are MIT; the German models used here are NOT MIT.
-_GERMAN_MODEL_LICENSE = "Moonshine Community License (non-commercial, see https://www.moonshine.ai/license)"
+_GERMAN_MODEL_LICENSE = (
+    "Moonshine Community License (non-commercial, see https://www.moonshine.ai/license)"
+)
 
 MODEL_METADATA = {
     GermanModel.TINY: {
