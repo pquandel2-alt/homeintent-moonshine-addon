@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.1] - 2026-09-17
+
+Makes the automatic Moonshine STT vocabulary Assist-aware: only entities actually
+exposed to Home Assistant's built-in Assist/Conversation pipeline (verified against
+Home Assistant Core's own exposure logic) now contribute automatic vocabulary
+terms, instead of the entire registry. Also fixes a real GitHub Actions CI failure
+in the published v0.2.0 Docker build and e2e job (broken torch CPU wheel
+resolution, missing pocket-tts dependency).
+
+See `homeintent-moonshine-stt/CHANGELOG.md` and `ABSCHLUSSBERICHT_V0.2.1.md` for full details.
+
 ## [0.2.0] - 2026-09-17
 
 Adds local German text-to-speech (Kyutai Pocket TTS, off by default on upgrade) and

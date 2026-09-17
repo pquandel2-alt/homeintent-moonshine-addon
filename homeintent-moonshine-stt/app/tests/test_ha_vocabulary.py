@@ -1,21 +1,27 @@
 """Tests for read-only Home Assistant vocabulary collection.
 
-Covers the pure normalization helpers directly, and fetch_ha_vocabulary()
-against a fake WebSocket connection standing in for Supervisor's proxied
-Home Assistant Core WebSocket API -- no real network/Supervisor is reached.
+Covers the pure normalization/exposure helpers directly, and
+fetch_ha_vocabulary() against a fake WebSocket connection standing in for
+Supervisor's proxied Home Assistant Core WebSocket API -- no real
+network/Supervisor is reached.
 """
 
+import itertools
 import json
 from typing import Any
 
 import pytest
 
 from app.ha_vocabulary import (
+    CONVERSATION_ASSISTANT,
     HaVocabularyResult,
     clean_term,
+    compute_exposed_entity_ids,
     dedupe_preserve_order,
     extract_vocabulary_terms,
     fetch_ha_vocabulary,
+    is_default_exposed,
+    is_effectively_exposed,
 )
 
 
@@ -52,6 +58,208 @@ class TestDedupePreserveOrder:
     def test_empty_list(self):
         assert dedupe_preserve_order([]) == []
 
+    def test_dedupes_hyphen_and_umlaut_variants(self):
+        assert dedupe_preserve_order(["Büro-Lampe", "büro-lampe"]) == ["Büro-Lampe"]
+
+
+class TestIsDefaultExposed:
+    """Reimplementation of ExposedEntities._is_default_exposed() (see
+    module docstring for the exact verified upstream source)."""
+
+    def test_domain_in_default_exposed_domains_is_true(self):
+        entity = {"entity_id": "light.wohnzimmer", "entity_category": None, "hidden_by": None}
+        assert is_default_exposed(entity, device_class=None) is True
+
+    def test_domain_not_in_default_exposed_domains_is_false(self):
+        entity = {
+            "entity_id": "sensor.router_cpu_temperature",
+            "entity_category": None,
+            "hidden_by": None,
+        }
+        assert is_default_exposed(entity, device_class="voltage") is False
+
+    def test_entity_category_excludes_from_default_exposure(self):
+        entity = {"entity_id": "light.wohnzimmer", "entity_category": "config", "hidden_by": None}
+        assert is_default_exposed(entity, device_class=None) is False
+
+    def test_hidden_by_excludes_from_default_exposure(self):
+        entity = {"entity_id": "light.wohnzimmer", "entity_category": None, "hidden_by": "user"}
+        assert is_default_exposed(entity, device_class=None) is False
+
+    def test_binary_sensor_with_allowlisted_device_class_is_true(self):
+        entity = {
+            "entity_id": "binary_sensor.garage_tor",
+            "entity_category": None,
+            "hidden_by": None,
+        }
+        assert is_default_exposed(entity, device_class="garage_door") is True
+
+    def test_binary_sensor_with_non_allowlisted_device_class_is_false(self):
+        entity = {
+            "entity_id": "binary_sensor.something",
+            "entity_category": None,
+            "hidden_by": None,
+        }
+        assert is_default_exposed(entity, device_class="battery") is False
+
+    def test_sensor_with_allowlisted_device_class_is_true(self):
+        entity = {
+            "entity_id": "sensor.wohnzimmer_temperatur",
+            "entity_category": None,
+            "hidden_by": None,
+        }
+        assert is_default_exposed(entity, device_class="temperature") is True
+
+    def test_sensor_with_non_allowlisted_device_class_is_false(self):
+        entity = {
+            "entity_id": "sensor.router_cpu_temperature",
+            "entity_category": None,
+            "hidden_by": None,
+        }
+        assert is_default_exposed(entity, device_class="voltage") is False
+
+
+class TestIsEffectivelyExposed:
+    """Reimplementation of ExposedEntities.async_should_expose(): an
+    explicit cached should_expose value always wins over the default rule;
+    disabled entities are never exposed."""
+
+    def test_explicit_should_expose_true_wins(self):
+        entity = {
+            "entity_id": "sensor.router_cpu_temperature",
+            "entity_category": None,
+            "hidden_by": None,
+            "options": {CONVERSATION_ASSISTANT: {"should_expose": True}},
+        }
+        assert (
+            is_effectively_exposed(entity, device_class="voltage", expose_new_default=True) is True
+        )
+
+    def test_explicit_should_expose_false_wins_over_default_true(self):
+        entity = {
+            "entity_id": "light.wohnzimmer",
+            "entity_category": None,
+            "hidden_by": None,
+            "options": {CONVERSATION_ASSISTANT: {"should_expose": False}},
+        }
+        assert is_effectively_exposed(entity, device_class=None, expose_new_default=True) is False
+
+    def test_no_override_falls_back_to_default_rule_when_expose_new_enabled(self):
+        entity = {"entity_id": "light.wohnzimmer", "entity_category": None, "hidden_by": None}
+        assert is_effectively_exposed(entity, device_class=None, expose_new_default=True) is True
+
+    def test_no_override_and_expose_new_disabled_is_false(self):
+        entity = {"entity_id": "light.wohnzimmer", "entity_category": None, "hidden_by": None}
+        assert is_effectively_exposed(entity, device_class=None, expose_new_default=False) is False
+
+    def test_disabled_entity_is_never_exposed_even_with_explicit_override(self):
+        entity = {
+            "entity_id": "light.wohnzimmer",
+            "entity_category": None,
+            "hidden_by": None,
+            "disabled_by": "user",
+            "options": {CONVERSATION_ASSISTANT: {"should_expose": True}},
+        }
+        assert is_effectively_exposed(entity, device_class=None, expose_new_default=True) is False
+
+    def test_override_for_a_different_assistant_is_ignored(self):
+        entity = {
+            "entity_id": "light.wohnzimmer",
+            "entity_category": None,
+            "hidden_by": None,
+            "options": {"cloud.alexa": {"should_expose": True}},
+        }
+        # No conversation-assistant override present -> falls through to
+        # the default rule, which is True for a light domain anyway; use a
+        # non-default-exposed domain to actually distinguish the two paths.
+        entity["entity_id"] = "sensor.router_cpu_temperature"
+        assert (
+            is_effectively_exposed(entity, device_class="voltage", expose_new_default=True) is False
+        )
+
+
+class TestComputeExposedEntityIds:
+    def test_empty_list_produces_empty_set(self):
+        assert compute_exposed_entity_ids([], [], expose_new_default=True) == set()
+
+    def test_default_exposed_entity_included(self):
+        entities = [{"entity_id": "light.wohnzimmer", "entity_category": None, "hidden_by": None}]
+        assert compute_exposed_entity_ids(entities, [], expose_new_default=True) == {
+            "light.wohnzimmer"
+        }
+
+    def test_non_exposed_sensor_excluded_without_override(self):
+        entities = [
+            {
+                "entity_id": "sensor.router_cpu_temperature",
+                "entity_category": None,
+                "hidden_by": None,
+            }
+        ]
+        states = [
+            {
+                "entity_id": "sensor.router_cpu_temperature",
+                "attributes": {"device_class": "temperature"},
+            }
+        ]
+        # temperature device_class *is* allowlisted for sensors, so this
+        # entity is actually exposed by default; use a non-allowlisted
+        # device_class to prove exclusion.
+        states = [
+            {
+                "entity_id": "sensor.router_cpu_temperature",
+                "attributes": {"device_class": "voltage"},
+            }
+        ]
+        assert compute_exposed_entity_ids(entities, states, expose_new_default=True) == set()
+
+    def test_device_class_resolved_from_live_state(self):
+        entities = [
+            {
+                "entity_id": "sensor.wohnzimmer_temperatur",
+                "entity_category": None,
+                "hidden_by": None,
+            }
+        ]
+        states = [
+            {
+                "entity_id": "sensor.wohnzimmer_temperatur",
+                "attributes": {"device_class": "temperature"},
+            }
+        ]
+        assert compute_exposed_entity_ids(entities, states, expose_new_default=True) == {
+            "sensor.wohnzimmer_temperatur"
+        }
+
+    def test_entity_without_entity_id_is_skipped(self):
+        entities = [{"entity_category": None, "hidden_by": None}]
+        assert compute_exposed_entity_ids(entities, [], expose_new_default=True) == set()
+
+    def test_mixed_exposed_and_non_exposed_entities(self):
+        entities: list[dict[str, Any]] = [
+            {"entity_id": "light.wohnzimmer", "entity_category": None, "hidden_by": None},
+            {
+                "entity_id": "sensor.router_cpu_temperature",
+                "entity_category": None,
+                "hidden_by": None,
+            },
+            {
+                "entity_id": "cover.garage_tor",
+                "entity_category": None,
+                "hidden_by": None,
+                "options": {CONVERSATION_ASSISTANT: {"should_expose": False}},
+            },
+        ]
+        states = [
+            {
+                "entity_id": "sensor.router_cpu_temperature",
+                "attributes": {"device_class": "voltage"},
+            }
+        ]
+        assert compute_exposed_entity_ids(entities, states, expose_new_default=True) == {
+            "light.wohnzimmer"
+        }
+
 
 class TestExtractVocabularyTerms:
     def test_area_name_included(self):
@@ -75,6 +283,18 @@ class TestExtractVocabularyTerms:
         devices = [{"name": "Shelly 1PM", "name_by_user": None}]
         assert extract_vocabulary_terms([], devices, []) == ["Shelly 1PM"]
 
+    def test_device_technical_default_name_with_mac_address_excluded(self):
+        devices = [{"name": "Shelly Plus 2PM 84:FC:E6:12:34:56", "name_by_user": None}]
+        assert extract_vocabulary_terms([], devices, []) == []
+
+    def test_device_technical_default_name_with_hex_serial_excluded(self):
+        devices = [{"name": "Shelly Plus 2PM 84FCE612", "name_by_user": None}]
+        assert extract_vocabulary_terms([], devices, []) == []
+
+    def test_device_user_customized_name_always_trusted(self):
+        devices = [{"name": "Shelly Plus 2PM 84FCE612", "name_by_user": "Rolllade Aktor"}]
+        assert extract_vocabulary_terms([], devices, []) == ["Rolllade Aktor"]
+
     def test_entity_prefers_name_over_original_name(self):
         entities = [{"name": "Deckenlampe", "original_name": "light.wohnzimmer_2"}]
         assert extract_vocabulary_terms([], [], entities) == ["Deckenlampe"]
@@ -83,11 +303,74 @@ class TestExtractVocabularyTerms:
         entities = [{"name": None, "original_name": "Deckenlampe Flur"}]
         assert extract_vocabulary_terms([], [], entities) == ["Deckenlampe Flur"]
 
-    def test_never_derives_term_from_raw_entity_id(self):
-        entities = [
-            {"entity_id": "light.wohnzimmer_deckenlampe", "name": None, "original_name": None}
+    def test_entity_id_used_as_last_resort_fallback_when_no_name_or_alias(self):
+        entities: list[dict[str, Any]] = [
+            {
+                "entity_id": "cover.wohnzimmer_rolllade",
+                "name": None,
+                "original_name": None,
+                "aliases": [],
+            }
         ]
-        assert extract_vocabulary_terms([], [], entities) == []
+        assert extract_vocabulary_terms([], [], entities) == ["Wohnzimmer Rolllade"]
+
+    def test_entity_id_fallback_never_includes_the_domain(self):
+        entities: list[dict[str, Any]] = [
+            {
+                "entity_id": "binary_sensor.wohnzimmer_fenster",
+                "name": None,
+                "original_name": None,
+                "aliases": [],
+            }
+        ]
+        terms = extract_vocabulary_terms([], [], entities)
+        assert terms == ["Wohnzimmer Fenster"]
+        assert not any("sensor" in t.casefold() for t in terms)
+
+    def test_entity_id_fallback_not_used_when_name_is_present(self):
+        entities = [
+            {
+                "entity_id": "light.wohnzimmer_deckenlampe",
+                "name": "Deckenlampe",
+                "original_name": None,
+            }
+        ]
+        assert extract_vocabulary_terms([], [], entities) == ["Deckenlampe"]
+
+    def test_entity_id_fallback_not_used_when_only_alias_is_present(self):
+        entities = [
+            {
+                "entity_id": "light.wohnzimmer_deckenlampe",
+                "name": None,
+                "original_name": None,
+                "aliases": ["Lampe"],
+            }
+        ]
+        assert extract_vocabulary_terms([], [], entities) == ["Lampe"]
+
+    def test_entity_alias_included_alongside_name(self):
+        entities = [
+            {
+                "entity_id": "cover.wohnzimmer_rolllade",
+                "name": "Rolllade",
+                "original_name": None,
+                "aliases": ["Rollo"],
+            }
+        ]
+        terms = extract_vocabulary_terms([], [], entities)
+        assert terms == ["Rolllade", "Rollo"]
+
+    def test_multiple_entity_aliases_all_included(self):
+        entities = [
+            {
+                "entity_id": "cover.wohnzimmer_rolllade",
+                "name": "Rolllade",
+                "original_name": None,
+                "aliases": ["Rollo", "Jalousie"],
+            }
+        ]
+        terms = extract_vocabulary_terms([], [], entities)
+        assert terms == ["Rolllade", "Rollo", "Jalousie"]
 
     def test_dedupes_across_categories(self):
         areas = [{"name": "Küche", "aliases": []}]
@@ -103,6 +386,81 @@ class TestExtractVocabularyTerms:
             {"name": "Bad", "aliases": []},
         ]
         assert extract_vocabulary_terms(areas, [], []) == ["Bad"]
+
+    def test_exposed_entity_ids_filters_out_non_exposed_entities(self):
+        entities = [
+            {"entity_id": "light.wohnzimmer", "name": "Deckenlampe", "original_name": None},
+            {
+                "entity_id": "sensor.router_cpu_temperature",
+                "name": "CPU Temperatur",
+                "original_name": None,
+            },
+        ]
+        terms = extract_vocabulary_terms([], [], entities, exposed_entity_ids={"light.wohnzimmer"})
+        assert terms == ["Deckenlampe"]
+
+    def test_exposed_entity_ids_empty_set_produces_no_entity_terms(self):
+        entities = [{"entity_id": "light.wohnzimmer", "name": "Deckenlampe", "original_name": None}]
+        terms = extract_vocabulary_terms([], [], entities, exposed_entity_ids=set())
+        assert terms == []
+
+    def test_exposed_entity_ids_none_means_unfiltered_backward_compatible_mode(self):
+        entities = [
+            {
+                "entity_id": "sensor.router_cpu_temperature",
+                "name": "CPU Temperatur",
+                "original_name": None,
+            }
+        ]
+        terms = extract_vocabulary_terms([], [], entities, exposed_entity_ids=None)
+        assert terms == ["CPU Temperatur"]
+
+    def test_areas_devices_floors_filtered_to_only_those_reachable_from_exposed_entities(self):
+        areas = [
+            {"area_id": "living_room", "name": "Wohnzimmer", "aliases": [], "floor_id": "ground"},
+            {"area_id": "office", "name": "Büro", "aliases": [], "floor_id": "upper"},
+        ]
+        devices = [
+            {
+                "id": "dev_lr",
+                "area_id": "living_room",
+                "name": "Aktor Wohnzimmer",
+                "name_by_user": None,
+            },
+            {"id": "dev_office", "area_id": "office", "name": "Aktor Büro", "name_by_user": None},
+        ]
+        entities = [
+            {
+                "entity_id": "cover.wohnzimmer_rolllade",
+                "area_id": None,
+                "device_id": "dev_lr",
+                "name": "Rolllade",
+                "original_name": None,
+            },
+            {
+                "entity_id": "sensor.buero_cpu_temperature",
+                "area_id": None,
+                "device_id": "dev_office",
+                "name": "CPU Temperatur",
+                "original_name": None,
+            },
+        ]
+        floors = [
+            {"floor_id": "ground", "name": "Erdgeschoss"},
+            {"floor_id": "upper", "name": "Obergeschoss"},
+        ]
+
+        terms = extract_vocabulary_terms(
+            areas, devices, entities, floors, exposed_entity_ids={"cover.wohnzimmer_rolllade"}
+        )
+
+        assert "Wohnzimmer" in terms
+        assert "Erdgeschoss" in terms
+        assert "Aktor Wohnzimmer" in terms
+        assert "Büro" not in terms
+        assert "Obergeschoss" not in terms
+        assert "Aktor Büro" not in terms
+        assert "CPU Temperatur" not in terms
 
 
 class TestAreaEntityCombinationTerms:
@@ -138,6 +496,30 @@ class TestAreaEntityCombinationTerms:
         terms = extract_vocabulary_terms(areas, devices, entities)
         assert "Küche Fenster" in terms
 
+    def test_area_alias_combination_terms_from_entity_alias(self):
+        """Wohnzimmer + alias "Rollo" -> "Wohnzimmer Rollo", per the user's
+        cover.wohnzimmer_rolllade example."""
+        areas = [{"area_id": "living_room", "name": "Wohnzimmer", "aliases": []}]
+        entities = [
+            {
+                "entity_id": "cover.wohnzimmer_rolllade",
+                "area_id": "living_room",
+                "device_id": None,
+                "name": "Rolllade",
+                "original_name": None,
+                "aliases": ["Rollo"],
+            }
+        ]
+        terms = extract_vocabulary_terms(areas, [], entities)
+        for expected in (
+            "Wohnzimmer",
+            "Rolllade",
+            "Rollo",
+            "Wohnzimmer Rolllade",
+            "Wohnzimmer Rollo",
+        ):
+            assert expected in terms
+
     def test_realistic_multi_room_registry(self):
         """Wohnzimmer: Rolllade, Deckenlampe, Fenster / Küche: Fenster,
         Deckenlampe / Schlafzimmer: Heizung / Garage: Licht."""
@@ -146,6 +528,7 @@ class TestAreaEntityCombinationTerms:
             {"area_id": "kitchen", "name": "Küche", "aliases": []},
             {"area_id": "bedroom", "name": "Schlafzimmer", "aliases": []},
             {"area_id": "garage", "name": "Garage", "aliases": []},
+            {"area_id": "bathroom", "name": "Badezimmer", "aliases": []},
         ]
         devices = [
             {"id": "dev_lr", "area_id": "living_room", "name": "Dev", "name_by_user": None},
@@ -201,6 +584,13 @@ class TestAreaEntityCombinationTerms:
                 "name": "Licht",
                 "original_name": None,
             },
+            {
+                "entity_id": "fan.badezimmer_lueftung",
+                "area_id": "bathroom",
+                "device_id": None,
+                "name": "Lüfter",
+                "original_name": None,
+            },
         ]
 
         terms = extract_vocabulary_terms(areas, devices, entities)
@@ -213,6 +603,7 @@ class TestAreaEntityCombinationTerms:
             "Küche Deckenlampe",
             "Schlafzimmer Heizung",
             "Garage Licht",
+            "Badezimmer Lüfter",
         ):
             assert expected in terms
 
@@ -322,8 +713,84 @@ class _FakeWebSocket:
         return False
 
 
-def _command_response(command_id: int, result: list[dict[str, Any]]) -> dict[str, Any]:
+def _command_response(command_id: int, result: Any) -> dict[str, Any]:
     return {"id": command_id, "type": "result", "success": True, "result": result}
+
+
+def _error_response(command_id: int) -> dict[str, Any]:
+    return {
+        "id": command_id,
+        "type": "result",
+        "success": False,
+        "error": {"code": "unknown_command", "message": "Unknown command"},
+    }
+
+
+def _full_script(
+    areas: list[dict[str, Any]] | None = None,
+    devices: list[dict[str, Any]] | None = None,
+    entities: list[dict[str, Any]] | None = None,
+    floors: list[dict[str, Any]] | None = None,
+    states: list[dict[str, Any]] | None = None,
+    expose_new: bool = True,
+    floors_supported: bool = True,
+    states_supported: bool = True,
+    expose_new_supported: bool = True,
+    aliases_by_entity_id: dict[str, list[str]] | None = None,
+    get_entries_supported: bool = True,
+) -> list[dict[str, Any]]:
+    """Build the full WS script fetch_ha_vocabulary() sends: areas,
+    devices, entities, floors, get_states, expose_new_entities/get, and
+    (only if at least one entity is exposed) entity_registry/get_entries
+    for those exposed entities' aliases -- mirroring the exact command
+    order in fetch_ha_vocabulary()."""
+    areas = areas or []
+    devices = devices or []
+    entities = entities or []
+    floors = floors if floors is not None else []
+    states = states if states is not None else []
+    aliases_by_entity_id = aliases_by_entity_id or {}
+
+    script: list[dict[str, Any]] = [{"type": "auth_required"}, {"type": "auth_ok"}]
+    ids = itertools.count(1)
+
+    script.append(_command_response(next(ids), areas))
+    script.append(_command_response(next(ids), devices))
+    script.append(_command_response(next(ids), entities))
+
+    script.append(
+        _command_response(next(ids), floors) if floors_supported else _error_response(next(ids))
+    )
+    script.append(
+        _command_response(next(ids), states) if states_supported else _error_response(next(ids))
+    )
+    effective_expose_new = expose_new if expose_new_supported else True
+    script.append(
+        _command_response(next(ids), {"expose_new": expose_new})
+        if expose_new_supported
+        else _error_response(next(ids))
+    )
+
+    exposed_ids = compute_exposed_entity_ids(entities, states, effective_expose_new)
+    if exposed_ids:
+        if get_entries_supported:
+            result = {
+                entity_id: {"aliases": aliases_by_entity_id.get(entity_id, [])}
+                for entity_id in sorted(exposed_ids)
+            }
+            script.append(_command_response(next(ids), result))
+        else:
+            script.append(_error_response(next(ids)))
+
+    return script
+
+
+def _fake_websockets_module(fake_ws: _FakeWebSocket) -> Any:
+    class _FakeWebsocketsModule:
+        def connect(self, url: str, open_timeout: float | None = None) -> _FakeWebSocket:
+            return fake_ws
+
+    return _FakeWebsocketsModule()
 
 
 class TestFetchHaVocabulary:
@@ -342,29 +809,132 @@ class TestFetchHaVocabulary:
         assert result == HaVocabularyResult(success=False, terms=[])
 
     @pytest.mark.asyncio
-    async def test_successful_fetch_returns_merged_terms(self, monkeypatch):
+    async def test_successful_fetch_returns_merged_terms_for_exposed_entities(self, monkeypatch):
         import app.ha_vocabulary as mod
 
-        script = [
-            {"type": "auth_required"},
-            {"type": "auth_ok"},
-            _command_response(1, [{"name": "Wohnzimmer", "aliases": []}]),
-            _command_response(2, [{"name": "Küche", "name_by_user": None}]),
-            _command_response(3, [{"name": "Deckenlampe", "original_name": None}]),
-            _command_response(4, [{"name": "Erdgeschoss"}]),
+        areas = [
+            {"area_id": "living_room", "name": "Wohnzimmer", "aliases": [], "floor_id": "ground"}
         ]
-        fake_ws = _FakeWebSocket(script)
-
-        class _FakeWebsocketsModule:
-            def connect(self, url: str, open_timeout: float | None = None) -> _FakeWebSocket:
-                return fake_ws
-
-        monkeypatch.setattr(mod, "websockets", _FakeWebsocketsModule())
+        devices: list[dict[str, Any]] = []
+        entities = [
+            {
+                "entity_id": "light.wohnzimmer",
+                "area_id": "living_room",
+                "device_id": None,
+                "name": "Deckenlampe",
+                "original_name": None,
+                "entity_category": None,
+                "hidden_by": None,
+            }
+        ]
+        floors = [{"floor_id": "ground", "name": "Erdgeschoss"}]
+        fake_ws = _FakeWebSocket(_full_script(areas, devices, entities, floors))
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
 
         result = await fetch_ha_vocabulary(token="abc")
 
         assert result.success is True
-        assert result.terms == ["Wohnzimmer", "Erdgeschoss", "Küche", "Deckenlampe"]
+        assert result.exposed_entity_count == 1
+        for expected in ("Wohnzimmer", "Erdgeschoss", "Deckenlampe", "Wohnzimmer Deckenlampe"):
+            assert expected in result.terms
+
+    @pytest.mark.asyncio
+    async def test_non_exposed_entity_produces_no_vocabulary(self, monkeypatch):
+        import app.ha_vocabulary as mod
+
+        entities = [
+            {
+                "entity_id": "sensor.router_cpu_temperature",
+                "area_id": None,
+                "device_id": None,
+                "name": "CPU Temperatur",
+                "original_name": None,
+                "entity_category": None,
+                "hidden_by": None,
+            }
+        ]
+        states = [
+            {
+                "entity_id": "sensor.router_cpu_temperature",
+                "attributes": {"device_class": "voltage"},
+            }
+        ]
+        fake_ws = _FakeWebSocket(_full_script(entities=entities, states=states))
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
+
+        result = await fetch_ha_vocabulary(token="abc")
+
+        assert result.success is True
+        assert result.exposed_entity_count == 0
+        assert result.terms == []
+
+    @pytest.mark.asyncio
+    async def test_realistic_wohnzimmer_rolllade_scenario(self, monkeypatch):
+        """The exact scenario from the task spec: Area "Wohnzimmer", Device
+        "Rollladenaktor", Entity cover.wohnzimmer_rolllade with friendly
+        name "Rolllade" and alias "Rollo", exposed to Assist -> expects
+        Wohnzimmer, Rolllade, Rollo, Wohnzimmer Rolllade, Wohnzimmer Rollo.
+        A second, non-exposed sensor.router_cpu_temperature must produce
+        no vocabulary at all."""
+        import app.ha_vocabulary as mod
+
+        areas = [{"area_id": "living_room", "name": "Wohnzimmer", "aliases": []}]
+        devices = [
+            {
+                "id": "dev_rolllade",
+                "area_id": "living_room",
+                "name": "Rollladenaktor",
+                "name_by_user": None,
+            }
+        ]
+        entities = [
+            {
+                "entity_id": "cover.wohnzimmer_rolllade",
+                "area_id": None,
+                "device_id": "dev_rolllade",
+                "name": "Rolllade",
+                "original_name": None,
+                "entity_category": None,
+                "hidden_by": None,
+            },
+            {
+                "entity_id": "sensor.router_cpu_temperature",
+                "area_id": None,
+                "device_id": None,
+                "name": "CPU Temperatur",
+                "original_name": None,
+                "entity_category": None,
+                "hidden_by": None,
+            },
+        ]
+        states = [
+            {
+                "entity_id": "sensor.router_cpu_temperature",
+                "attributes": {"device_class": "voltage"},
+            }
+        ]
+        aliases_by_entity_id = {"cover.wohnzimmer_rolllade": ["Rollo"]}
+        fake_ws = _FakeWebSocket(
+            _full_script(
+                areas, devices, entities, states=states, aliases_by_entity_id=aliases_by_entity_id
+            )
+        )
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
+
+        result = await fetch_ha_vocabulary(token="abc")
+
+        assert result.success is True
+        assert result.exposed_entity_count == 1
+        for expected in (
+            "Wohnzimmer",
+            "Rolllade",
+            "Rollo",
+            "Wohnzimmer Rolllade",
+            "Wohnzimmer Rollo",
+        ):
+            assert expected in result.terms
+        assert "CPU Temperatur" not in result.terms
+        assert not any("router" in t.casefold() for t in result.terms)
 
     @pytest.mark.asyncio
     async def test_successful_fetch_with_no_registry_entries_is_success_not_failure(
@@ -374,25 +944,12 @@ class TestFetchHaVocabulary:
         distinguishable from a failed fetch -- see HaVocabularyResult."""
         import app.ha_vocabulary as mod
 
-        script = [
-            {"type": "auth_required"},
-            {"type": "auth_ok"},
-            _command_response(1, []),
-            _command_response(2, []),
-            _command_response(3, []),
-            _command_response(4, []),
-        ]
-        fake_ws = _FakeWebSocket(script)
-
-        class _FakeWebsocketsModule:
-            def connect(self, url: str, open_timeout: float | None = None) -> _FakeWebSocket:
-                return fake_ws
-
-        monkeypatch.setattr(mod, "websockets", _FakeWebsocketsModule())
+        fake_ws = _FakeWebSocket(_full_script())
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
 
         result = await fetch_ha_vocabulary(token="abc")
 
-        assert result == HaVocabularyResult(success=True, terms=[])
+        assert result == HaVocabularyResult(success=True, terms=[], exposed_entity_count=0)
 
     @pytest.mark.asyncio
     async def test_auth_failure_returns_failed_result(self, monkeypatch):
@@ -400,12 +957,7 @@ class TestFetchHaVocabulary:
 
         script = [{"type": "auth_required"}, {"type": "auth_invalid"}]
         fake_ws = _FakeWebSocket(script)
-
-        class _FakeWebsocketsModule:
-            def connect(self, url: str, open_timeout: float | None = None) -> _FakeWebSocket:
-                return fake_ws
-
-        monkeypatch.setattr(mod, "websockets", _FakeWebsocketsModule())
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
 
         result = await fetch_ha_vocabulary(token="abc")
         assert result == HaVocabularyResult(success=False, terms=[])
@@ -428,27 +980,175 @@ class TestFetchHaVocabulary:
         """Older HA cores may not support config/floor_registry/list."""
         import app.ha_vocabulary as mod
 
-        script = [
-            {"type": "auth_required"},
-            {"type": "auth_ok"},
-            _command_response(1, [{"name": "Wohnzimmer", "aliases": []}]),
-            _command_response(2, []),
-            _command_response(3, []),
+        areas = [{"area_id": "living_room", "name": "Wohnzimmer", "aliases": []}]
+        entities = [
             {
-                "id": 4,
-                "type": "result",
-                "success": False,
-                "error": {"code": "unknown_command", "message": "Unknown command"},
-            },
+                "entity_id": "light.wohnzimmer",
+                "area_id": "living_room",
+                "device_id": None,
+                "name": "Deckenlampe",
+                "original_name": None,
+                "entity_category": None,
+                "hidden_by": None,
+            }
         ]
-        fake_ws = _FakeWebSocket(script)
-
-        class _FakeWebsocketsModule:
-            def connect(self, url: str, open_timeout: float | None = None) -> _FakeWebSocket:
-                return fake_ws
-
-        monkeypatch.setattr(mod, "websockets", _FakeWebsocketsModule())
+        fake_ws = _FakeWebSocket(
+            _full_script(areas=areas, entities=entities, floors_supported=False)
+        )
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
 
         result = await fetch_ha_vocabulary(token="abc")
 
-        assert result == HaVocabularyResult(success=True, terms=["Wohnzimmer"])
+        assert result.success is True
+        assert "Wohnzimmer" in result.terms
+
+    @pytest.mark.asyncio
+    async def test_missing_get_states_command_is_tolerated(self, monkeypatch):
+        """Without get_states, sensor/binary_sensor default-exposure device
+        classes can't be resolved, but domain-only entities (e.g. light)
+        are unaffected."""
+        import app.ha_vocabulary as mod
+
+        entities = [
+            {
+                "entity_id": "light.wohnzimmer",
+                "area_id": None,
+                "device_id": None,
+                "name": "Deckenlampe",
+                "original_name": None,
+                "entity_category": None,
+                "hidden_by": None,
+            }
+        ]
+        fake_ws = _FakeWebSocket(_full_script(entities=entities, states_supported=False))
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
+
+        result = await fetch_ha_vocabulary(token="abc")
+
+        assert result.success is True
+        assert result.terms == ["Deckenlampe"]
+
+    @pytest.mark.asyncio
+    async def test_missing_expose_new_entities_command_defaults_to_enabled(self, monkeypatch):
+        import app.ha_vocabulary as mod
+
+        entities = [
+            {
+                "entity_id": "light.wohnzimmer",
+                "area_id": None,
+                "device_id": None,
+                "name": "Deckenlampe",
+                "original_name": None,
+                "entity_category": None,
+                "hidden_by": None,
+            }
+        ]
+        fake_ws = _FakeWebSocket(_full_script(entities=entities, expose_new_supported=False))
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
+
+        result = await fetch_ha_vocabulary(token="abc")
+
+        assert result.success is True
+        assert result.terms == ["Deckenlampe"]
+
+    @pytest.mark.asyncio
+    async def test_expose_new_disabled_excludes_default_exposed_entities(self, monkeypatch):
+        import app.ha_vocabulary as mod
+
+        entities = [
+            {
+                "entity_id": "light.wohnzimmer",
+                "area_id": None,
+                "device_id": None,
+                "name": "Deckenlampe",
+                "original_name": None,
+                "entity_category": None,
+                "hidden_by": None,
+            }
+        ]
+        fake_ws = _FakeWebSocket(_full_script(entities=entities, expose_new=False))
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
+
+        result = await fetch_ha_vocabulary(token="abc")
+
+        assert result.success is True
+        assert result.terms == []
+
+    @pytest.mark.asyncio
+    async def test_missing_get_entries_command_degrades_to_no_aliases(self, monkeypatch):
+        """Aliases are a nice-to-have, fetched in a second round trip --
+        their absence must not fail the whole vocabulary fetch."""
+        import app.ha_vocabulary as mod
+
+        entities = [
+            {
+                "entity_id": "cover.wohnzimmer_rolllade",
+                "area_id": None,
+                "device_id": None,
+                "name": "Rolllade",
+                "original_name": None,
+                "entity_category": None,
+                "hidden_by": None,
+            }
+        ]
+        fake_ws = _FakeWebSocket(_full_script(entities=entities, get_entries_supported=False))
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
+
+        result = await fetch_ha_vocabulary(token="abc")
+
+        assert result.success is True
+        assert result.terms == ["Rolllade"]
+
+    @pytest.mark.asyncio
+    async def test_empty_assist_exposure_list_is_success_with_no_terms(self, monkeypatch):
+        """No entity is exposed at all (e.g. expose_new disabled and no
+        explicit overrides) -- a legitimate, successful empty result."""
+        import app.ha_vocabulary as mod
+
+        entities = [
+            {
+                "entity_id": "sensor.router_cpu_temperature",
+                "area_id": None,
+                "device_id": None,
+                "name": "CPU Temperatur",
+                "original_name": None,
+                "entity_category": None,
+                "hidden_by": None,
+            }
+        ]
+        fake_ws = _FakeWebSocket(_full_script(entities=entities, expose_new=False))
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
+
+        result = await fetch_ha_vocabulary(token="abc")
+
+        assert result == HaVocabularyResult(success=True, terms=[], exposed_entity_count=0)
+
+    @pytest.mark.asyncio
+    async def test_many_exposed_entities_all_produce_vocabulary(self, monkeypatch):
+        """A large number of Assist-exposed entities must all be reflected
+        -- no arbitrary invented cap on the underlying entity vocabulary
+        itself (only the area+entity combination list is capped, see
+        TestAreaEntityCombinationTerms.test_combination_terms_capped_at_maximum)."""
+        import app.ha_vocabulary as mod
+
+        entities = [
+            {
+                "entity_id": f"light.lampe_{i}",
+                "area_id": None,
+                "device_id": None,
+                "name": f"Lampe {i}",
+                "original_name": None,
+                "entity_category": None,
+                "hidden_by": None,
+            }
+            for i in range(200)
+        ]
+        fake_ws = _FakeWebSocket(_full_script(entities=entities))
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
+
+        result = await fetch_ha_vocabulary(token="abc")
+
+        assert result.success is True
+        assert result.exposed_entity_count == 200
+        assert "Lampe 0" in result.terms
+        assert "Lampe 199" in result.terms

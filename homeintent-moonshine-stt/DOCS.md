@@ -47,13 +47,19 @@ over one Wyoming service.
 
 ### Recognition tuning (STT keyterms and vocabulary)
 
-- **use_ha_vocabulary** (default `true`): reads your Home Assistant Areas, Devices,
-  Entities, and Floors (via the Supervisor-proxied Core API) and biases recognition
-  towards your actual room/device names, including "Area Entity" combinations (e.g.
-  "Wohnzimmer Rolllade") wherever a real Entity→Area or Entity→Device→Area
-  relationship is known. Strictly read-only. If Home Assistant can't be reached on a
-  periodic refresh, the add-on keeps the last successfully loaded vocabulary rather
-  than dropping it.
+- **use_ha_vocabulary** (default `true`): automatically takes over the vocabulary of
+  entities you've exposed to Home Assistant **Assist** (Settings → Voice assistants
+  → Expose). For every effectively Assist-exposed entity, it biases recognition
+  towards its friendly name, aliases, and area, including "Area Entity"/"Area Alias"
+  combinations (e.g. `cover.wohnzimmer_rolllade` with alias "Rollo" in area
+  "Wohnzimmer" → `Rolllade`, `Rollo`, `Wohnzimmer Rolllade`, `Wohnzimmer Rollo`).
+  Entities not exposed to Assist (e.g. an unexposed `sensor.router_cpu_temperature`)
+  contribute nothing. Newly exposed entities are picked up at the next refresh;
+  removing an exposure makes its terms disappear after the next successful refresh.
+  Effective exposure is computed the same way Home Assistant Core itself does (an
+  explicit override always wins, otherwise Core's own default-exposure rule).
+  Strictly read-only. If Home Assistant can't be reached on a periodic refresh, the
+  add-on keeps the last successfully loaded vocabulary rather than dropping it.
 - **ha_vocabulary_refresh_minutes** (default `30`): how often the vocabulary is
   re-read. `0` disables periodic refresh.
 - **extra_keyterms** (default empty): your own comma-separated words/phrases, merged
@@ -127,8 +133,10 @@ Both are cached under `/data/` — subsequent starts are fast.
 
 - Transcripts, synthesized text, and debug audio are **off by default** — nothing
   beyond compact performance-metrics lines is logged unless explicitly enabled.
-- `use_ha_vocabulary` only ever *reads* Home Assistant's registries — it never calls a
-  service, changes a state, or edits an entity/automation.
+- `use_ha_vocabulary` only ever *reads* Home Assistant's registries (entity names,
+  aliases, device names, area names, and Assist exposure) — it never calls a
+  service, changes a state, reads sensor values, stores states, or edits an
+  entity/automation/Assist exposure setting.
 
 ## License
 

@@ -99,7 +99,7 @@ The add-on is configured via Home Assistant's UI:
 | **log_level** | `DEBUG`, `INFO`, `WARNING`, `ERROR` | `INFO` | Logging verbosity |
 | **log_transcripts** | `true`/`false` | `false` | Log recognized text. **Off by default** — enable only if you need to debug what was actually recognized |
 | **log_performance** | `true`/`false` | `true` | Log a compact per-utterance STT timing line (model, audio duration, inference time, RTF). Never includes transcript text |
-| **use_ha_vocabulary** | `true`/`false` | `true` | Read your Home Assistant Areas/Devices/Entities/Floors (via the Supervisor-proxied Core API) and bias recognition towards your actual room and device names — including "Area Entity" combinations like "Wohnzimmer Rolllade" where a real relationship is known. **Strictly read-only.** If Home Assistant is unreachable, the add-on keeps using the last successfully loaded vocabulary rather than dropping it |
+| **use_ha_vocabulary** | `true`/`false` | `true` | Automatically bias recognition towards the entities you've actually exposed to Home Assistant Assist — names, aliases, and "Area Entity"/"Area Alias" combinations like "Wohnzimmer Rolllade" or "Wohnzimmer Rollo" where a real relationship is known. Entities not exposed to Assist (e.g. an unexposed `sensor.router_cpu_temperature`) contribute no vocabulary. **Strictly read-only.** If Home Assistant is unreachable, the add-on keeps using the last successfully loaded vocabulary rather than dropping it |
 | **ha_vocabulary_refresh_minutes** | `0`–`1440` | `30` | How often to re-read the HA registries and refresh keyterms. `0` disables periodic refresh (read once at startup) |
 | **extra_keyterms** | comma-separated text | `""` | Additional words/phrases to bias recognition towards, merged with the Home Assistant vocabulary and deduplicated |
 | **keyterm_boost** | `0.0`–`10.0` | `2.0` | Strength applied to keyterms (matches Moonshine's own default) |
@@ -234,10 +234,15 @@ layered on top.
 - **Transcripts are never logged by default** (`log_transcripts: false`).
 - **Synthesized text is never logged** by the TTS performance line — only timing/RTF numbers.
 - **Performance logging never includes transcript or synthesis text.**
-- **`use_ha_vocabulary` is strictly read-only** — only `config/*_registry/list` calls
-  against the Home Assistant Core API; it never calls a service, changes a state, or
-  edits an entity/automation. A failed refresh keeps the last successfully loaded
-  vocabulary rather than losing it.
+- **`use_ha_vocabulary` is strictly read-only** — only `config/*_registry/list`,
+  `config/entity_registry/get_entries` (aliases), and `get_states` (device class)
+  calls against the Home Assistant Core API; it never calls a service, changes a
+  state, and never changes an entity's Assist exposure, automation, or any other HA
+  config. Only entities you've actually exposed to Assist contribute vocabulary,
+  computed the same way Home Assistant Core itself determines effective exposure.
+  A failed refresh keeps the last successfully loaded vocabulary rather than losing
+  it; a *successful* refresh that no longer sees a previously-exposed entity does
+  remove it from the vocabulary.
 - **`save_debug_audio` is off by default**, and applies only to received STT audio
   (never TTS output). Metadata is an explicit allowlist (timestamp, model, language,
   transcript, duration, sample rate) — never an entity state.

@@ -1,5 +1,55 @@
 # Changelog - HomeIntent Moonshine Voice Add-on
 
+## [0.2.1] - 2026-09-17
+
+Makes the automatic Moonshine STT vocabulary Assist-aware: it now reflects the
+entities actually exposed to Home Assistant's built-in Assist/Conversation
+pipeline instead of the entire registry indiscriminately. See
+`ABSCHLUSSBERICHT_V0.2.1.md` for the full verification report. Pocket TTS and the
+core Moonshine streaming/locking implementation are unchanged.
+
+### Changed
+- **HA vocabulary now sourced from Assist exposure** (`app/ha_vocabulary.py`): only
+  entities *effectively exposed* to Assist (the `"conversation"` assistant)
+  contribute automatic vocabulary terms. Effective exposure is computed the same
+  way Home Assistant Core itself does -- an explicit, cached
+  `should_expose` override always wins; otherwise the same default-exposure rule
+  Home Assistant Core uses (`DEFAULT_EXPOSED_DOMAINS`, plus device-class allowlists
+  for `binary_sensor`/`sensor`), gated on the assistant's "expose new entities
+  automatically" setting -- reimplemented and verified against the `home-assistant/
+  core` `dev` branch (see the module docstring for the exact source references).
+  A previously-unexposed sensor such as `sensor.router_cpu_temperature` no longer
+  pollutes the STT vocabulary; an exposed `cover.wohnzimmer_rolllade` with an alias
+  now contributes its name, alias, and area combinations (`Rolllade`, `Rollo`,
+  `Wohnzimmer Rolllade`, `Wohnzimmer Rollo`).
+  - Area+Entity and Area+Alias combination terms are still generated (see v0.2.0),
+    now scoped to Assist-exposed entities only.
+  - Entity aliases are fetched via `config/entity_registry/get_entries`
+    (`config/entity_registry/list` alone doesn't include them), for exposed
+    entities only.
+  - An entity_id (e.g. `cover.wohnzimmer_rolllade` -> "Wohnzimmer Rolllade") is
+    used as a last-resort vocabulary term only when an exposed entity has no
+    name, no original name, and no alias at all -- the domain itself
+    (`cover`, `sensor`, ...) is never added as a keyword.
+  - A device's default name is skipped as a vocabulary term if it looks like a
+    MAC address, a UUID, or a bare hex serial (e.g. "Shelly Plus 2PM 84FCE6");
+    a user-customized device name (`name_by_user`) is always trusted.
+  - A failed refresh (Supervisor/HA unreachable, timeout, auth error, ...) keeps
+    the previous last-known-good Assist vocabulary unchanged (see v0.2.0); a
+    *successful* refresh that no longer sees a previously-exposed entity removes
+    it from the vocabulary, since that's not an API failure.
+  - Manual `extra_keyterms` are unaffected and merged in exactly as before.
+  - Startup/refresh logging stays compact (`Assist-exposed entities: N, HA
+    vocabulary terms: M`), never dumping full entity/alias lists at INFO level.
+
+### Fixed
+- Real GitHub Actions CI for v0.2.0 was red on Docker build (amd64+aarch64) and
+  `e2e-audio-transcribe`: `pip install torch --index-url
+  https://download.pytorch.org/whl/cpu` broke resolution of `typing-extensions`
+  (no PyPI fallback), and `e2e-audio-transcribe` was missing `pocket-tts`. Fixed by
+  adding `--extra-index-url https://pypi.org/simple` everywhere torch is installed
+  and adding the missing TTS dependency install.
+
 ## [0.2.0] - 2026-09-17
 
 Adds local German text-to-speech (Kyutai Pocket TTS) alongside the existing Moonshine
