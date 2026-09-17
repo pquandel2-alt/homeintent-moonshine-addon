@@ -10,5 +10,5 @@ jobs:
       - uses: actions/setup-python@v4
         with:
           python-version: "3.11"
-      - run: pip install mypy numpy moonshine-voice wyoming
+      - run: pip install mypy numpy moonshine-voice wyoming pytest pytest-asyncio
       - run: mypy --config-file homeintent-moonshine-stt/app/pyproject.toml homeintent-moonshine-stt/app/
