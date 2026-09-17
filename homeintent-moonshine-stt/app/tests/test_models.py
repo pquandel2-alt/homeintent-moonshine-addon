@@ -1,7 +1,5 @@
 """Tests for model loading and validation."""
 
-import pytest
-
 from app.models import GermanModel, get_model_info, validate_model
 
 

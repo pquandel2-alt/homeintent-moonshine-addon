@@ -69,10 +69,16 @@ If the add-on fails to start, check the logs. Common issues:
 
 ## Performance Notes
 
-- **Tiny model**: ~0.3x real-time (3 seconds of audio takes ~1 second to process)
-- **Small model**: ~0.2x real-time (faster than Tiny, better accuracy)
-- Latency: ~200-500ms from end of speech to transcript
+- **Tiny model** (34M params): faster inference, ~12% WER (upstream-published, German)
+- **Small model** (123M params): more compute per chunk, ~7.5% WER (upstream-published, German) — recommended for accuracy
+- Real-time-factor and end-to-end latency have not been benchmarked for this add-on
 
 ## License
 
-This add-on and Moonshine models are licensed under the MIT License.
+This add-on's code is licensed under the MIT License.
+
+**The German Moonshine models are NOT MIT licensed.** They are published under
+Moonshine's non-commercial Community License — free for researchers, developers, small
+businesses, and creators with less than $1M in annual revenue. See
+[moonshine.ai/license](https://www.moonshine.ai/license) for full terms before
+commercial use.

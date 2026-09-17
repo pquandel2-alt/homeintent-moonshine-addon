@@ -21,7 +21,7 @@ class TestPcmConversion:
     def test_max_positive(self):
         """Test conversion of maximum positive PCM value (32767)."""
         # 32767 in int16 (big-endian: 0x7FFF)
-        pcm_bytes = b"\xFF\x7F"  # Little-endian: 0x7FFF = 32767
+        pcm_bytes = b"\xff\x7f"  # Little-endian: 0x7FFF = 32767
         result = pcm_int16_to_float32(pcm_bytes)
         expected = 32767.0 / 32768.0  # ~0.99997
         assert np.isclose(result[0], expected)
@@ -39,7 +39,7 @@ class TestPcmConversion:
         # Create test data: [0, 32767, -32768, 16384]
         pcm_bytes = (
             b"\x00\x00"  # 0
-            b"\xFF\x7F"  # 32767
+            b"\xff\x7f"  # 32767
             b"\x00\x80"  # -32768
             b"\x00\x40"  # 16384
         )
@@ -101,4 +101,5 @@ class TestAudioFormatValidation:
     def test_custom_context_in_error(self):
         """Test that context string appears in error message."""
         error = validate_audio_format(rate=8000, width=2, channels=1, context="audio-start")
+        assert error is not None
         assert "audio-start" in error

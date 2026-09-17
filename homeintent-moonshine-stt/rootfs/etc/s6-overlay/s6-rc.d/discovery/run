@@ -1,24 +1,25 @@
 #!/command/with-contenv bashio
-
 # vim: ft=bash
+# shellcheck shell=bash
+# ==============================================================================
+# Sends discovery information to Home Assistant.
+# ==============================================================================
+declare config
 
-# Wait for service to be ready
-sleep 2
+# Wait for the Wyoming server to become available
+bash -c \
+    "until
+        echo '{ \"type\": \"describe\" }'
+            > /dev/tcp/localhost/10300; do sleep 0.5;
+    done" > /dev/null 2>&1 || true;
 
-# Check if service is listening
-if ! nc -w 1 localhost 10300 < /dev/null > /dev/null 2>&1; then
-    bashio::log.warning "Service not ready yet, skipping discovery"
-    exit 0
-fi
-
-bashio::log.info "Registering Wyoming service discovery"
-
-# Build discovery config
-config=$(bashio::var.json \
-    uri "tcp://$(hostname -I | awk '{print $1}'):10300"
+config=$(\
+    bashio::var.json \
+        uri "tcp://$(hostname):10300" \
 )
 
-# Send discovery info
-bashio::discovery "wyoming" "${config}" || true
-
-bashio::log.info "Discovery complete"
+if bashio::discovery "wyoming" "${config}" > /dev/null; then
+    bashio::log.info "Successfully send discovery information to Home Assistant."
+else
+    bashio::log.error "Discovery message to Home Assistant failed!"
+fi

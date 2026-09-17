@@ -11,4 +11,4 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install mypy numpy moonshine-voice wyoming
-      - run: mypy homeintent-moonshine-stt/app/ --ignore-missing-imports
+      - run: mypy --config-file homeintent-moonshine-stt/app/pyproject.toml homeintent-moonshine-stt/app/

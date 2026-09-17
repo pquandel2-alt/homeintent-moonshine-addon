@@ -4,13 +4,14 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 import sys
 from functools import partial
 from pathlib import Path
 
+from wyoming.server import AsyncTcpServer
+
+from app.handler import MoonshineAsrHandler
 from app.models import load_transcriber
-from app.server import MoonshineServer
 
 # Setup logging
 logging.basicConfig(
@@ -77,11 +78,13 @@ def main() -> int:
         logging.getLogger().setLevel(logging.DEBUG)
         _LOGGER.info("Debug logging enabled")
 
-    _LOGGER.info(f"HomeIntent Moonshine STT v0.1.0")
+    _LOGGER.info("HomeIntent Moonshine STT v0.1.0")
     _LOGGER.info(f"Model: {args.model}")
     _LOGGER.info(f"Language: {args.language}")
 
-    # Load model once
+    # Load the model exactly once. Per-connection isolation happens via
+    # Transcriber.create_stream() inside MoonshineStreamingSession, not by
+    # reloading the model.
     try:
         _LOGGER.info("Loading Moonshine model...")
         transcriber = load_transcriber(model=args.model, language=args.language)
@@ -90,20 +93,18 @@ def main() -> int:
         _LOGGER.error(f"Failed to load model: {e}")
         return 1
 
-    # Create server with factory that returns the same transcriber
-    # (shared across connections, but each session gets its own)
-    transcriber_factory = partial(load_transcriber, model=args.model, language=args.language)
-
-    server = MoonshineServer(
-        host=args.host,
-        port=args.port,
-        transcriber_factory=transcriber_factory,
+    handler_factory = partial(
+        MoonshineAsrHandler,
+        transcriber=transcriber,
         model_name=args.model,
         language=args.language,
     )
 
+    server = AsyncTcpServer(args.host, args.port)
+    _LOGGER.info(f"Starting Wyoming server on {args.host}:{args.port}")
+
     try:
-        asyncio.run(server.run())
+        asyncio.run(server.run(handler_factory))
     except KeyboardInterrupt:
         _LOGGER.info("Interrupted")
         return 0

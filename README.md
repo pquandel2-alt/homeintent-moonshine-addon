@@ -2,7 +2,8 @@
 
 Real-time German speech-to-text for Home Assistant using Moonshine streaming ASR.
 
-![License](https://img.shields.io/badge/license-MIT-green)
+![Code License](https://img.shields.io/badge/code%20license-MIT-green)
+![Model License](https://img.shields.io/badge/model%20license-non--commercial-orange)
 ![Python](https://img.shields.io/badge/python-3.11+-blue)
 ![Home Assistant](https://img.shields.io/badge/home%20assistant-2023.11+-brightgreen)
 
@@ -16,7 +17,7 @@ This is a **Home Assistant Add-on** that provides offline, real-time German spee
 - ✅ **Tiny & Small Models**: Choose between speed or accuracy
 - ✅ **CPU-only**: Works on any hardware (Raspberry Pi, NAS, etc.)
 - ✅ **Offline**: No cloud API, everything runs locally
-- ✅ **Open Source**: MIT License
+- ✅ **Open Source**: Add-on code is MIT licensed (see [Model License](#license) for the German model weights)
 
 ## Why This Add-on?
 
@@ -40,7 +41,7 @@ audio-chunk → process immediately
 audio-stop  → finalize and return
 ```
 
-This means **latency is reduced dramatically** — the model starts processing while you're still speaking.
+The model starts processing while you're still speaking, instead of waiting until you stop.
 
 ## Installation
 
@@ -120,17 +121,13 @@ To test microphone input:
 
 ### Model Sizes
 
-| Model | Parameters | File Size | WER | Latency | Use Case |
-|-------|-----------|-----------|-----|---------|----------|
-| **Tiny** | 34M | ~80MB | 12.0% | Very fast | Low-end hardware, fast feedback |
-| **Small** | 123M | ~200MB | 7.5% | Fast | Recommended for most setups |
+| Model | Parameters | File Size | WER | Use Case |
+|-------|-----------|-----------|-----|----------|
+| **Tiny** | 34M | ~80MB | 12.0% | Low-end hardware, fast feedback |
+| **Small** | 123M | ~200MB | 7.5% | Recommended for most setups |
 
-### Latency Expectations
-
-- **Model Load**: ~5-10 seconds (first start only)
-- **Audio Stream**: ~200-500ms from end of speech to transcript
-
-This is the inherent latency of speech recognition. The streaming architecture minimizes buffering overhead.
+WER (Word Error Rate) figures are upstream-published values for German. Latency and
+real-time-factor have not been benchmarked for this add-on, so no numbers are given here.
 
 ## Troubleshooting
 
@@ -148,7 +145,7 @@ Check the logs (**Add-ons → HomeIntent Moonshine STT → Logs**):
 - Try the Tiny model (uses less memory)
 - If on Raspberry Pi 3 or earlier: Tiny model is required
 
-**"ONNX Runtime not found"**
+**Native library / model load errors**
 - This is a container build issue. Try stopping and restarting the add-on
 - If persistent, report an issue
 
@@ -220,7 +217,7 @@ If transcription is slow:
                           ↓
                Moonshine Streaming ASR
                           ↓
-            Local CPU Inference (ONNX)
+              Local CPU Inference (native)
                           ↓
                   Transcript Result
 ```
@@ -261,9 +258,15 @@ mypy . --ignore-missing-imports
 
 ## License
 
-This add-on is licensed under the MIT License — see [LICENSE](LICENSE).
+This add-on's code is licensed under the MIT License — see [LICENSE](LICENSE).
 
-Moonshine models are also MIT licensed.
+**The German Moonshine models used by this add-on are NOT MIT licensed.** Moonshine
+publishes German (and other non-English) models under its non-commercial **Community
+License** — free for researchers, developers, small businesses, and creators with less
+than $1M in annual revenue; commercial use beyond that requires Moonshine's Enterprise
+license. Only Moonshine's English models are MIT. See
+[moonshine.ai/license](https://www.moonshine.ai/license) for the full terms before using
+this add-on in a commercial context.
 
 ## Contributing
 

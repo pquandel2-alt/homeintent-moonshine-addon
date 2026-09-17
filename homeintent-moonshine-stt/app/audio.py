@@ -1,7 +1,7 @@
 """Audio format conversion utilities."""
 
 import logging
-from typing import Optional
+from typing import Any
 
 import numpy as np
 
@@ -15,7 +15,7 @@ WYOMING_SAMPLE_RATE = 16000
 MOONSHINE_FLOAT_RANGE = 32768.0
 
 
-def pcm_int16_to_float32(pcm_bytes: bytes) -> np.ndarray:
+def pcm_int16_to_float32(pcm_bytes: bytes) -> np.ndarray[Any, np.dtype[np.float32]]:
     """Convert 16-bit PCM bytes to 32-bit float array.
 
     Wyoming sends 16-bit signed PCM (mono, 16kHz).
@@ -46,7 +46,7 @@ def pcm_int16_to_float32(pcm_bytes: bytes) -> np.ndarray:
 
 def validate_audio_format(
     rate: int, width: int, channels: int, context: str = "audio event"
-) -> Optional[str]:
+) -> str | None:
     """Validate Wyoming audio format.
 
     Wyoming standard: 16kHz sample rate, 2-byte width (16-bit), 1 channel (mono).

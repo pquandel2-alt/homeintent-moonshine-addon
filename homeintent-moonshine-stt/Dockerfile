@@ -33,8 +33,8 @@ COPY app/ /app/
 WORKDIR /
 COPY rootfs /
 
-# Set environment for model caching
-ENV HF_HOME=/data/models
+# Set environment for model caching (see moonshine_voice.download_file.get_cache_dir)
+ENV MOONSHINE_VOICE_CACHE=/data/models
 
 # Health check
 HEALTHCHECK --start-period=60s --interval=30s --timeout=20s \

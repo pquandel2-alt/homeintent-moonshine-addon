@@ -5,8 +5,7 @@
 set -e
 
 export PYTHONUNBUFFERED=1
-export HF_HOME=/data/models
-export ORT_DISABLE_TELEMETRY=1
+export MOONSHINE_VOICE_CACHE=/data/models
 
 # Parse configuration
 MODEL=$(bashio::config 'model')
