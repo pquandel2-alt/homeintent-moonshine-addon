@@ -18,6 +18,17 @@ OPTIONS = {
     "model": os.environ.get("CI_MODEL", "tiny"),
     "language": "de",
     "log_level": "INFO",
+    "log_transcripts": False,
+    "log_performance": True,
+    "extra_keyterms": "",
+    "keyterm_boost": 2.0,
+    "use_ha_vocabulary": True,
+    "ha_vocabulary_refresh_minutes": 30,
+    "transcription_interval": 0.5,
+    "vad_threshold": 0.5,
+    "decode_incomplete_lines": True,
+    "save_debug_audio": False,
+    "debug_audio_max_files": 100,
 }
 
 
