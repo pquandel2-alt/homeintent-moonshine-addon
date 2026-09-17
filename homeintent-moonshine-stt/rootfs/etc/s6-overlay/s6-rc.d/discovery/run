@@ -11,9 +11,10 @@ declare ready
 # describe/info round trip (the same check used for the Docker HEALTHCHECK,
 # see app/healthcheck.py), not just a bare TCP connect. Bounded so a broken
 # server cannot hang this oneshot service (and therefore add-on startup)
-# forever.
+# forever. 180 attempts (up from 60 pre-TTS) because a first-run Pocket TTS
+# model download can take longer than plain Moonshine STT startup did.
 ready=false
-for _ in $(seq 1 60); do
+for _ in $(seq 1 180); do
     if (cd / && python3 -m app.healthcheck) > /dev/null 2>&1; then
         ready=true
         break

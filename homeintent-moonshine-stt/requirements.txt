@@ -1,4 +1,9 @@
+# For CPU-only torch (avoids ~1GB of unused nvidia-* CUDA packages on
+# Linux), install torch FIRST from its own index before this file:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.txt
 moonshine-voice==0.1.5
 wyoming==1.10.2
-numpy==1.24.3
+numpy==2.4.6
 websockets==17.1
+pocket-tts==3.1.0

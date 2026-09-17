@@ -1,13 +1,14 @@
 [project]
 name = "homeintent-moonshine-stt"
-version = "0.1.2"
-description = "German speech-to-text using Moonshine streaming ASR"
+version = "0.2.0"
+description = "German speech-to-text (Moonshine) and text-to-speech (Kyutai Pocket TTS)"
 requires-python = ">=3.11"
 dependencies = [
     "moonshine-voice==0.1.5",
     "wyoming==1.10.2",
-    "numpy==1.24.3",
+    "numpy==2.4.6",
     "websockets==17.1",
+    "pocket-tts==3.1.0",
 ]
 
 [tool.pytest.ini_options]
@@ -30,8 +31,13 @@ module = "moonshine_voice"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+module = "pocket_tts"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = "app.tests.*"
 disallow_untyped_defs = false
+disallow_incomplete_defs = false
 
 [[tool.mypy.overrides]]
 # PyYAML is only used by CI-only test helpers (verifying the fake

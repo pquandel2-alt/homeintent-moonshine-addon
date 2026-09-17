@@ -1,8 +1,11 @@
 ---
-name: HomeIntent Moonshine STT
-version: 0.1.2
+name: HomeIntent Moonshine Voice
+# Slug intentionally left as "homeintent-moonshine-stt" (its v0.1.x value) so
+# existing installations upgrade in place rather than appearing as a brand
+# new add-on -- see ABSCHLUSSBERICHT_V0.2.0.md's "Add-on name / slug" section.
+version: 0.2.0
 slug: homeintent-moonshine-stt
-description: Real-time German speech-to-text using Moonshine streaming ASR
+description: Local German speech-to-text (Moonshine) and text-to-speech (Kyutai Pocket TTS) over Wyoming
 url: https://github.com/pquandel2-alt/homeintent-moonshine-addon
 arch:
   - amd64
@@ -22,6 +25,7 @@ backup_exclude:
 # change a state, or edit an automation/entity.
 homeassistant_api: true
 options:
+  stt_enabled: true
   model: small
   language: de
   log_level: INFO
@@ -36,7 +40,17 @@ options:
   decode_incomplete_lines: true
   save_debug_audio: false
   debug_audio_max_files: 100
+  # TTS defaults to OFF on upgrade: an existing pure-STT installation must
+  # not suddenly download an extra PyTorch + Pocket TTS model (several
+  # hundred MB) and grow its startup time. New installations are documented
+  # (README) to turn it on. See ABSCHLUSSBERICHT_V0.2.0.md, "Backward
+  # compatibility" section, for the full reasoning.
+  tts_enabled: false
+  tts_model: german
+  tts_voice: juergen
+  tts_log_performance: true
 schema:
+  stt_enabled: bool
   model: list(tiny|small)
   language: list(de)
   log_level: list(DEBUG|INFO|WARNING|ERROR)
@@ -51,4 +65,8 @@ schema:
   decode_incomplete_lines: bool
   save_debug_audio: bool
   debug_audio_max_files: int(1,10000)
+  tts_enabled: bool
+  tts_model: list(german|german_24l)
+  tts_voice: str
+  tts_log_performance: bool
 homeassistant: "2023.11.0"

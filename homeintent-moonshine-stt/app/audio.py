@@ -44,6 +44,18 @@ def pcm_int16_to_float32(pcm_bytes: bytes) -> np.ndarray[Any, np.dtype[np.float3
     return samples_float32
 
 
+def float32_to_pcm_int16(samples: "np.ndarray[Any, np.dtype[np.floating[Any]]]") -> bytes:
+    """Convert float32 samples (nominally in [-1.0, 1.0]) to 16-bit PCM bytes.
+
+    Used for Pocket TTS output (see app/tts_session.py): Pocket TTS yields
+    float32 tensors, but Wyoming's AudioChunk carries raw PCM. Clips before
+    scaling so a brief model overshoot outside [-1.0, 1.0] clips cleanly
+    instead of wrapping around to the opposite sign.
+    """
+    clipped = np.clip(samples, -1.0, 1.0)
+    return bytes((clipped * 32767.0).astype(np.int16).tobytes())
+
+
 def validate_audio_format(
     rate: int, width: int, channels: int, context: str = "audio event"
 ) -> str | None:

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.0] - 2026-09-17
+
+Adds local German text-to-speech (Kyutai Pocket TTS, off by default on upgrade) and
+fixes the v0.1.2 review findings (CI config sync, upgrade-safe option handling, HA
+vocabulary last-known-good, `set_keyterms()` locking, real STT RTF, Area+Entity
+contextual keyterms). Add-on display name is now "HomeIntent Moonshine Voice"; the
+Supervisor slug is unchanged so existing installs update in place.
+
+See `homeintent-moonshine-stt/CHANGELOG.md` and `ABSCHLUSSBERICHT_V0.2.0.md` for full details.
+
 ## [0.1.2] - 2026-09-17
 
 Home Assistant / smart-home optimization pass, ahead of the first real-hardware

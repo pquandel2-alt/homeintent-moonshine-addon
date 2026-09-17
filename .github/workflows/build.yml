@@ -1,6 +1,12 @@
 name: Build
 
-on: [push, pull_request]
+on:
+  push: {}
+  pull_request: {}
+  # Lets the real Pocket TTS e2e job (below) be run on demand from the
+  # Actions UI without adding a real model download to every normal push/PR
+  # -- see e2e-tts-synthesize's own `if:` condition.
+  workflow_dispatch: {}
 
 jobs:
   build-amd64:
@@ -121,7 +127,7 @@ jobs:
             -v "${GITHUB_WORKSPACE}/.github/ci/fake_supervisor.py:/fake_supervisor.py:ro" \
             -v "${GITHUB_WORKSPACE}/homeintent-moonshine-stt/config.yaml:/config.yaml:ro" \
             -e CI_MODEL=tiny \
-            -e CI_OMIT_OPTIONS="log_performance,use_ha_vocabulary,ha_vocabulary_refresh_minutes,transcription_interval,decode_incomplete_lines,save_debug_audio,debug_audio_max_files" \
+            -e CI_OMIT_OPTIONS="log_performance,use_ha_vocabulary,ha_vocabulary_refresh_minutes,transcription_interval,decode_incomplete_lines,save_debug_audio,debug_audio_max_files,stt_enabled,tts_enabled,tts_model,tts_voice,tts_log_performance" \
             -e CI_NULL_OPTIONS="keyterm_boost,vad_threshold" \
             python:3.11-slim python3 /fake_supervisor.py
 
@@ -190,12 +196,36 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install pytest pytest-asyncio numpy==1.24.3 moonshine-voice wyoming websockets==17.1
+      - run: pip install pytest pytest-asyncio numpy==2.4.6 moonshine-voice wyoming websockets==17.1
 
       - name: Synthesize German audio, transcribe it, and check the result
         run: |
           cd homeintent-moonshine-stt
           python3 -m pytest app/tests/test_e2e_transcribe.py -v -m e2e -rs
+
+  e2e-tts-synthesize:
+    name: Real German Pocket TTS E2E Wyoming round-trip (manual only)
+    # Downloads a real Pocket TTS model + voice state on every run -- kept
+    # out of the normal push/PR pipeline (see B30 review note /
+    # ABSCHLUSSBERICHT_V0.2.0.md) and only runs when triggered manually via
+    # `workflow_dispatch` from the Actions tab.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install pytest pytest-asyncio wyoming pocket-tts
+
+      - name: Synthesize German text with Pocket TTS and check the audio
+        run: |
+          cd homeintent-moonshine-stt
+          python3 -m pytest app/tests/test_e2e_tts.py -v -m e2e -rs
 
   build-aarch64:
     name: Build aarch64 image (QEMU, build-only)

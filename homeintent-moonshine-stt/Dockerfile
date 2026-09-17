@@ -18,12 +18,27 @@ RUN apt-get update \
 RUN python${PYTHON_VERSION} -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install Python packages
+# Install Python packages.
+#
+# torch is installed FIRST and explicitly from PyTorch's own CPU-only wheel
+# index (--index-url, which REPLACES the default index rather than merely
+# adding to it -- an --extra-index-url alone was empirically found, while
+# developing this add-on, to still let pip's resolver pick PyPI's default
+# CUDA build here, pulling ~1GB of unused nvidia-* packages). Installing
+# pocket-tts afterwards then finds its own "torch>=2.5.0" requirement
+# already satisfied and never touches it again. Not version-pinned (unlike
+# the other packages here) because this sandbox's network policy blocks
+# download.pytorch.org, so a specific version available on that index could
+# not be verified here -- see ABSCHLUSSBERICHT_V0.2.0.md's TTS section.
 RUN pip install --no-cache-dir \
+    torch \
+    --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir \
     moonshine-voice==0.1.5 \
     wyoming==1.10.2 \
-    numpy==1.24.3 \
-    websockets==17.1
+    numpy==2.4.6 \
+    websockets==17.1 \
+    pocket-tts==3.1.0
 
 # Copy application
 WORKDIR /app
@@ -33,11 +48,20 @@ COPY app/ /app/
 WORKDIR /
 COPY rootfs /
 
-# Set environment for model caching (see moonshine_voice.download_file.get_cache_dir)
+# Set environment for model caching. MOONSHINE_VOICE_CACHE: see
+# moonshine_voice.download_file.get_cache_dir. HF_HOME: pocket_tts's
+# download_if_necessary() delegates hf:// weight/voice paths to
+# huggingface_hub's hf_hub_download(), which honors this standard env var
+# for its cache location (see app/tts.py's module docstring). Kept as a
+# separate subdirectory from Moonshine's own model cache so STT and TTS
+# model files never collide and can be inspected/cleared independently.
 ENV MOONSHINE_VOICE_CACHE=/data/models
+ENV HF_HOME=/data/models/pocket-tts
 
-# Health check: real Wyoming describe round-trip, not a raw-byte grep (see app/healthcheck.py)
-HEALTHCHECK --start-period=60s --interval=30s --timeout=20s \
+# Health check: real Wyoming describe round-trip, not a raw-byte grep (see
+# app/healthcheck.py). start-period raised from 60s: a first-run Pocket TTS
+# model download can take longer than plain Moonshine STT startup did.
+HEALTHCHECK --start-period=180s --interval=30s --timeout=20s \
     CMD python3 -m app.healthcheck || exit 1
 
 ENTRYPOINT ["/init"]

@@ -1,15 +1,17 @@
-# HomeIntent Moonshine STT
+# HomeIntent Moonshine Voice
 
-Real-time German speech-to-text using the Moonshine streaming ASR model.
+Local German speech-to-text (Moonshine) and text-to-speech (Kyutai Pocket TTS), both
+over one Wyoming service.
 
 ## Features
 
-- **Streaming ASR**: Audio is processed in real-time as it arrives, not after recording ends
-- **German Language**: Optimized for German speech recognition
-- **Tiny & Small Models**: Choose between speed (Tiny, 34M params) or accuracy (Small, 123M params)
-- **CPU-only**: Works on any hardware without GPU
-- **Model Caching**: Downloaded models are cached to avoid re-downloads
-- **Home Assistant Integration**: Automatic discovery for Assist pipelines
+- **Streaming STT**: audio is transcribed in real-time as it arrives
+- **Streaming TTS**: audio is sent back as it is generated, not after the whole reply
+- **German language**: both STT and TTS
+- **CPU-only**: no GPU required for either engine
+- **Model caching**: STT and TTS models are cached separately, no repeated downloads
+- **Home Assistant integration**: automatic discovery, advertises ASR and/or TTS
+  depending on what's enabled
 
 ## Installation
 
@@ -19,108 +21,126 @@ Real-time German speech-to-text using the Moonshine streaming ASR model.
 4. Add this repository URL: `https://github.com/pquandel2-alt/homeintent-moonshine-addon`
 5. Click **Create** and wait for it to load
 6. Go back to the Add-on Store
-7. Find **HomeIntent Moonshine STT** and click it
+7. Find **HomeIntent Moonshine Voice** and click it
 8. Click **Install**
 
 ## Configuration
 
-### Model Selection
+### STT
 
-- **Tiny** (34M): Faster inference, lower accuracy (~12% WER)
-- **Small** (123M): Better accuracy (~7.5% WER) — Recommended
+- **stt_enabled** (default `true`): enable Moonshine speech-to-text.
+- **model**: `tiny` (34M, faster, ~12% WER) or `small` (123M, ~7.5% WER, recommended).
+- **language**: `de` (German only).
+- **log_level**: `DEBUG`/`INFO`/`WARNING`/`ERROR`.
 
-### Log Level
+### TTS
 
-- **DEBUG**: Detailed logging (helpful for troubleshooting)
-- **INFO**: Normal operation
-- **WARNING**: Only important messages
-- **ERROR**: Only errors
+- **tts_enabled** (default `false`): enable Kyutai Pocket TTS. Off by default on
+  upgrade so an existing STT-only install doesn't suddenly download an extra runtime
+  and model — see the README's Backward Compatibility section.
+- **tts_model**: `german` (6 transformer layers, faster, default) or `german_24l`
+  (24 layers, higher quality, slower).
+- **tts_voice** (default `juergen`): the German preset voice. `juergen` is the only
+  real German preset Pocket TTS ships.
+- **tts_log_performance** (default `true`): logs a compact TTFA/synthesis-time/RTF
+  line per request. Never logs the synthesized text.
 
-### Recognition tuning (keyterms and vocabulary)
+### Recognition tuning (STT keyterms and vocabulary)
 
 - **use_ha_vocabulary** (default `true`): reads your Home Assistant Areas, Devices,
   Entities, and Floors (via the Supervisor-proxied Core API) and biases recognition
-  towards your actual room/device names. Strictly read-only — never calls a service or
-  changes a state. If Home Assistant can't be reached, the add-on logs a warning and
-  still starts, using whatever keyterms it has.
+  towards your actual room/device names, including "Area Entity" combinations (e.g.
+  "Wohnzimmer Rolllade") wherever a real Entity→Area or Entity→Device→Area
+  relationship is known. Strictly read-only. If Home Assistant can't be reached on a
+  periodic refresh, the add-on keeps the last successfully loaded vocabulary rather
+  than dropping it.
 - **ha_vocabulary_refresh_minutes** (default `30`): how often the vocabulary is
   re-read. `0` disables periodic refresh.
 - **extra_keyterms** (default empty): your own comma-separated words/phrases, merged
-  with the Home Assistant vocabulary and deduplicated, e.g. `Wohnzimmer, Rolladen`.
+  with the Home Assistant vocabulary and deduplicated.
 - **keyterm_boost** (default `2.0`): strength applied to keyterms.
 - **transcription_interval** (default `0.5`): seconds between partial transcript
   updates.
 - **vad_threshold** (default `0.5`): voice-activity-detection sensitivity.
-- **decode_incomplete_lines** (default `true`): decode/emit lines still in progress for
-  lower-latency partial results.
+- **decode_incomplete_lines** (default `true`): decode/emit lines still in progress
+  for lower-latency partial results.
 
 ### Logging and debugging
 
 - **log_transcripts** (default `false`): recognized text is never logged unless you
   turn this on.
-- **log_performance** (default `true`): a compact per-utterance line (model, audio
-  duration, processing time, real-time factor) — never includes transcript text.
-- **save_debug_audio** (default `false`): saves received audio as WAV + JSON metadata
-  to `/data/debug_audio` for troubleshooting. Metadata is limited to an explicit
-  allowlist (timestamp, model, language, transcript, duration, sample rate) — never a
-  Home Assistant entity state. Excluded from backups. Turn on only while debugging.
-- **debug_audio_max_files** (default `100`): oldest-first retention limit for saved
-  debug audio.
+- **log_performance** (default `true`): a compact per-utterance STT line (model, audio
+  duration, real inference time, finalize time, RTF) — never includes transcript text.
+- **save_debug_audio** (default `false`): saves received STT audio as WAV + JSON
+  metadata to `/data/debug_audio` for troubleshooting. Excluded from backups.
 
 ## First Start
 
-The first time you start the add-on, it will download the selected model (~200MB for Small).
-This may take a few minutes depending on your internet speed.
+- STT: downloads the selected Moonshine model (~200MB for Small) if enabled.
+- TTS: downloads the Pocket TTS model + configured voice's embedding, if enabled.
 
-On subsequent starts, the cached model is used — no download needed.
+Both are cached under `/data/` — subsequent starts are fast.
 
 ## Using with Home Assistant Assist
 
 1. Open **Settings** → **Voice assistants**
 2. Click **Create assistant** or edit your existing one
-3. In the STT (Speech-to-Text) section, look for **HomeIntent Moonshine STT**
-4. Select it and ensure **German** is selected
-5. Save and test by voice
+3. Select **HomeIntent Moonshine** as speech-to-text (if `stt_enabled`)
+4. Select **HomeIntent Pocket TTS** as text-to-speech (if `tts_enabled`)
+5. Ensure **German** is selected
+6. Save and test by voice
 
 ## Troubleshooting
 
-### No Model Available
+### Add-on Fails to Start
 
-If the add-on fails to start, check the logs. Common issues:
-
-- **Network**: Model download failed. Check your internet and try restarting.
+- **Network**: Model download failed (STT or TTS). Check your internet and restart.
 - **Storage**: Not enough space in `/data/models`. Free up space and restart.
-- **Memory**: Moonshine needs ~500MB RAM. On Raspberry Pi, close other add-ons.
+- **Memory**: Moonshine needs ~500MB RAM; Pocket TTS is a ~100M-parameter model on
+  top of that if TTS is enabled. On low-RAM hardware, use the Tiny STT model and the
+  `german` (6-layer, not `german_24l`) TTS model.
+- **"Failed to load Pocket TTS model"**: a TTS load failure is treated as fatal (not
+  a silent fallback) so you notice it immediately — check the exact error in the
+  logs, or set `tts_enabled: false` temporarily to keep STT working.
 
-### Recognition Not Working
+### Recognition/Synthesis Not Working
 
 - Ensure **German** is selected in your Assist pipeline
-- Check that your microphone is working (test with another app first)
-- Switch to **Small** model if using **Tiny** (faster but less accurate)
+- Check that your microphone is working (test with another app first) for STT
+- Check `tts_enabled: true` is actually set if you expect a TTS voice to appear
 
 ## Performance Notes
 
-- **Tiny model** (34M params): faster inference, ~12% WER (upstream-published, German)
-- **Small model** (123M params): more compute per chunk, ~7.5% WER (upstream-published, German) — recommended for accuracy
-- Real-time-factor and end-to-end latency depend heavily on your own CPU. Use
-  `python -m app.benchmark <file.wav>` (in the add-on's source repository) to measure
-  RTF on your own hardware — this is not run in CI and not the source of any number
-  quoted here.
+- **STT Tiny model** (34M params): faster inference, ~12% WER (upstream-published, German)
+- **STT Small model** (123M params): more compute per chunk, ~7.5% WER (upstream-published,
+  German) — recommended for accuracy
+- **TTS german model**: faster, recommended default
+- **TTS german_24l model**: higher quality, slower
+- Real-time-factor and end-to-end latency for both STT and TTS depend heavily on your
+  own CPU. Use `python -m app.benchmark <file.wav>` for STT RTF, and
+  `tts_log_performance: true`'s log line for TTS TTFA/RTF, to measure your own
+  hardware — no number in this document has been measured on this add-on's own
+  target hardware; see `ABSCHLUSSBERICHT_V0.2.0.md` for exactly what has and hasn't
+  been measured.
 
 ## Privacy
 
-- Transcripts and debug audio are **off by default** — nothing beyond a compact
-  performance-metrics line is logged unless you explicitly enable `log_transcripts` or
-  `save_debug_audio`.
+- Transcripts, synthesized text, and debug audio are **off by default** — nothing
+  beyond compact performance-metrics lines is logged unless explicitly enabled.
 - `use_ha_vocabulary` only ever *reads* Home Assistant's registries — it never calls a
   service, changes a state, or edits an entity/automation.
 
 ## License
 
-This add-on's code is licensed under the MIT License.
+This add-on's code, and Pocket TTS's own code, are licensed under the MIT License.
 
-**The German Moonshine models are NOT MIT licensed.** They are published under
-Moonshine's non-commercial Community License — free for researchers, developers, small
-businesses, and creators with less than $1M in annual revenue. See
-[moonshine.ai/license](https://www.moonshine.ai/license) for full terms before
-commercial use.
+**Model weights are not all MIT and differ between STT and TTS:**
+- The German Moonshine STT models are published under Moonshine's non-commercial
+  Community License — free for researchers, developers, small businesses, and
+  creators with less than $1M in annual revenue. See
+  [moonshine.ai/license](https://www.moonshine.ai/license).
+- Pocket TTS's German model weights carry Kyutai's own usage restrictions (no voice
+  impersonation/cloning without consent, no misinformation/deception uses, see the
+  README) — the exact Hugging Face license field could not be verified during this
+  add-on's development (huggingface.co was unreachable from the development
+  environment); review it yourself before commercial use.

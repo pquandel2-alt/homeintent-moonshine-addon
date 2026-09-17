@@ -1,21 +1,33 @@
-"""Wyoming ASR event handler for Moonshine streaming."""
+"""Wyoming ASR/TTS event handler for Moonshine STT + Pocket TTS."""
 
 import asyncio
 import logging
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from moonshine_voice import Transcriber
 from wyoming.asr import Transcript
-from wyoming.audio import AudioChunk, AudioStart
+from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.error import Error as WyomingError
 from wyoming.event import Event
-from wyoming.info import AsrModel, AsrProgram, Attribution, Info
+from wyoming.info import (
+    AsrModel,
+    AsrProgram,
+    Attribution,
+    Info,
+    TtsProgram,
+    TtsVoice,
+)
 from wyoming.server import AsyncEventHandler
+from wyoming.tts import Synthesize
 
-from app.audio import pcm_int16_to_float32, validate_audio_format
+from app.audio import float32_to_pcm_int16, pcm_int16_to_float32, validate_audio_format
 from app.debug_audio import DEFAULT_DEBUG_AUDIO_DIR, save_debug_audio
 from app.models import get_model_info
 from app.streaming import MoonshineStreamingSession
+from app.tts import get_tts_model_info
+from app.tts_session import TtsSynthesizer
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,25 +39,48 @@ _ATTRIBUTION_MODEL = Attribution(
     name="Moonshine AI",
     url="https://github.com/moonshine-ai/moonshine",
 )
+_ATTRIBUTION_TTS_MODEL = Attribution(
+    name="Kyutai",
+    url="https://github.com/kyutai-labs/pocket-tts",
+)
+
+
+@dataclass
+class _SynthesisStats:
+    """Accumulator for one _handle_synthesize() call's performance data."""
+
+    audio_started: bool = False
+    total_samples: int = 0
+    first_chunk_generated_at: float | None = None
+    first_chunk_sent_at: float | None = None
 
 
 class MoonshineAsrHandler(AsyncEventHandler):
-    """Handles Wyoming STT events and runs Moonshine for transcription.
+    """Handles Wyoming STT (Moonshine) and TTS (Pocket TTS) events.
 
     Per Wyoming connection, one handler instance sharing the single
-    pre-loaded Transcriber; per transcription request, one isolated
-    MoonshineStreamingSession created via Transcriber.create_stream().
+    pre-loaded Transcriber and/or PocketTtsSynthesizer created once at
+    add-on startup. Either can be disabled (``transcriber``/
+    ``tts_synthesizer`` left ``None``) per the ``stt_enabled``/
+    ``tts_enabled`` add-on options -- service discovery then only
+    advertises whichever is actually active.
 
-    Key design: add_audio() is called PER Wyoming audio-chunk (streaming),
-    not after all audio is buffered.
+    Key STT design (unchanged from the STT-only releases): add_audio() is
+    called PER Wyoming audio-chunk (streaming), not after all audio is
+    buffered, via one isolated MoonshineStreamingSession per transcription
+    request (Transcriber.create_stream()).
+
+    Key TTS design: audio-chunks are forwarded to the client as soon as
+    Pocket TTS's own generate_audio_stream() yields them (see
+    app/tts_session.py) -- not after synthesizing the whole utterance.
     """
 
     def __init__(
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
-        transcriber: Transcriber,
-        model_name: str,
+        transcriber: Transcriber | None,
+        model_name: str = "",
         language: str = "de",
         log_transcripts: bool = False,
         log_performance: bool = True,
@@ -53,14 +88,18 @@ class MoonshineAsrHandler(AsyncEventHandler):
         debug_audio_max_files: int = 100,
         debug_audio_dir: Path = DEFAULT_DEBUG_AUDIO_DIR,
         moonshine_lock: asyncio.Lock | None = None,
+        tts_synthesizer: TtsSynthesizer | None = None,
+        tts_model_name: str = "",
+        tts_log_performance: bool = True,
     ):
         """Initialize handler.
 
         Args:
             reader: Wyoming protocol reader
             writer: Wyoming protocol writer
-            transcriber: The single Transcriber loaded once at add-on startup
-            model_name: Model to use ("tiny" or "small")
+            transcriber: The single Transcriber loaded once at add-on
+                startup, or None if ``stt_enabled`` is false.
+            model_name: STT model in use ("tiny" or "small").
             language: Language code ("de" for German)
             log_transcripts: If True, log the recognized text at INFO. If
                 False (default), only log its length -- recognized speech is
@@ -78,6 +117,13 @@ class MoonshineAsrHandler(AsyncEventHandler):
                 Transcriber, serializing native calls (see
                 app/streaming.py's MoonshineStreamingSession docstring for
                 why). Pass the same lock instance to every handler.
+            tts_synthesizer: The single PocketTtsSynthesizer created once at
+                add-on startup, or None if ``tts_enabled`` is false.
+            tts_model_name: TTS model in use ("german" or "german_24l"),
+                for logging/discovery only.
+            tts_log_performance: If True, log a compact per-request TTFA/
+                RTF line (see _handle_synthesize). Never includes the
+                synthesized text.
         """
         super().__init__(reader, writer)
         self._transcriber = transcriber
@@ -89,18 +135,22 @@ class MoonshineAsrHandler(AsyncEventHandler):
         self._debug_audio_max_files = debug_audio_max_files
         self._debug_audio_dir = debug_audio_dir
         self._moonshine_lock = moonshine_lock
+        self._tts_synthesizer = tts_synthesizer
+        self._tts_model_name = tts_model_name
+        self._tts_log_performance = tts_log_performance
 
         self._session: MoonshineStreamingSession | None = None
         self._audio_rejected = False
         self._raw_audio_buffer: bytearray | None = None
 
     async def handle_event(self, event: Event) -> bool:
-        """Main event handler for Wyoming STT lifecycle.
+        """Main event handler for the Wyoming STT and TTS lifecycles.
 
         Handles:
-        - describe: Service discovery
-        - transcribe: Start a new transcription
-        - audio-start/chunk/stop: Audio stream lifecycle
+        - describe: Service discovery (ASR and/or TTS, whichever enabled)
+        - transcribe: Start a new STT transcription
+        - audio-start/chunk/stop: STT audio stream lifecycle
+        - synthesize: A TTS request (single-shot text -> audio-chunk stream)
         """
         try:
             match event.type:
@@ -119,6 +169,9 @@ class MoonshineAsrHandler(AsyncEventHandler):
                 case "audio-stop":
                     await self._handle_audio_stop()
 
+                case "synthesize":
+                    await self._handle_synthesize(event)
+
                 case _:
                     _LOGGER.debug(f"Ignoring unsupported event type: {event.type}")
 
@@ -133,31 +186,67 @@ class MoonshineAsrHandler(AsyncEventHandler):
         """Called by AsyncEventHandler.run() when the client disconnects.
 
         Guarantees the native Moonshine stream is released even if the
-        client vanishes mid-utterance (no audio-stop ever arrives).
+        client vanishes mid-utterance (no audio-stop ever arrives). Any
+        in-flight TTS synthesis (see _handle_synthesize) is stopped by its
+        own async-generator cleanup when the client disconnect surfaces as
+        a write failure or a cancelled task -- there is no separate
+        long-lived TTS session object to release here.
         """
         self._close_session()
 
     async def _handle_describe(self) -> None:
-        """Respond to service discovery request."""
-        model_info = get_model_info(self._model_name)
+        """Respond to service discovery request with whichever of ASR/TTS
+        is actually enabled (transcriber/tts_synthesizer not None)."""
+        asr_programs = []
+        if self._transcriber is not None:
+            model_info = get_model_info(self._model_name)
+            asr_model = AsrModel(
+                name=model_info.get("name", "unknown"),
+                attribution=_ATTRIBUTION_MODEL,
+                installed=True,
+                description=model_info.get("description", ""),
+                version=model_info.get("name", "0.1.0"),
+                languages=[self._language],
+            )
+            asr_programs.append(
+                AsrProgram(
+                    name="homeintent-moonshine",
+                    attribution=_ATTRIBUTION_PROGRAM,
+                    installed=True,
+                    description="HomeIntent Moonshine STT - German streaming ASR",
+                    version=None,
+                    models=[asr_model],
+                )
+            )
 
-        asr_model = AsrModel(
-            name=model_info.get("name", "unknown"),
-            attribution=_ATTRIBUTION_MODEL,
-            installed=True,
-            description=model_info.get("description", ""),
-            version=model_info.get("name", "0.1.0"),
-            languages=[self._language],
-        )
-        asr_program = AsrProgram(
-            name="homeintent-moonshine",
-            attribution=_ATTRIBUTION_PROGRAM,
-            installed=True,
-            description="HomeIntent Moonshine STT - German streaming ASR",
-            version=None,
-            models=[asr_model],
-        )
-        info = Info(asr=[asr_program])
+        tts_programs = []
+        if self._tts_synthesizer is not None:
+            tts_model_info = get_tts_model_info(self._tts_model_name)
+            tts_voice = TtsVoice(
+                name=self._tts_synthesizer.default_voice,
+                attribution=_ATTRIBUTION_TTS_MODEL,
+                installed=True,
+                description=tts_model_info.get("description", ""),
+                version=None,
+                languages=[self._language],
+            )
+            tts_programs.append(
+                TtsProgram(
+                    name="homeintent-pocket-tts",
+                    attribution=_ATTRIBUTION_TTS_MODEL,
+                    installed=True,
+                    description="HomeIntent Pocket TTS - German streaming TTS",
+                    version=None,
+                    voices=[tts_voice],
+                    # Only audio *output* is chunk-streamed (see
+                    # _handle_synthesize) -- incremental *text* input via
+                    # Wyoming's synthesize-start/-chunk/-stop protocol is
+                    # not implemented, so this stays false.
+                    supports_synthesize_streaming=False,
+                )
+            )
+
+        info = Info(asr=asr_programs, tts=tts_programs)
         await self.write_event(info.event())
 
     def _close_session(self) -> None:
@@ -175,6 +264,10 @@ class MoonshineAsrHandler(AsyncEventHandler):
 
     async def _handle_audio_start(self, event: Event) -> None:
         """Handle audio stream start."""
+        if self._transcriber is None:
+            _LOGGER.warning("Received audio-start but STT is disabled (stt_enabled: false)")
+            return
+
         audio_start = AudioStart.from_event(event)
 
         error = validate_audio_format(
@@ -298,3 +391,117 @@ class MoonshineAsrHandler(AsyncEventHandler):
                 )
             except OSError as err:
                 _LOGGER.error("Failed to save debug audio: %s", err)
+
+    async def _stream_synthesis_chunks(
+        self, text: str, voice_name: str | None, sample_rate: int
+    ) -> "_SynthesisStats":
+        """Consume the TTS stream, forwarding audio-start/chunk as it goes.
+
+        Split out of _handle_synthesize() to keep that method's own
+        complexity manageable; raises on synthesis failure (caller decides
+        how to answer the client), always sends audio-start at most once,
+        and always releases the underlying async generator via aclose(),
+        including on early client disconnect (B26).
+        """
+        stats = _SynthesisStats()
+        assert self._tts_synthesizer is not None  # only called when TTS is enabled
+
+        agen = self._tts_synthesizer.synthesize_stream(text, voice_name)
+        try:
+            async for chunk in agen:
+                if stats.first_chunk_generated_at is None:
+                    stats.first_chunk_generated_at = time.monotonic()
+                if not stats.audio_started:
+                    await self.write_event(
+                        AudioStart(rate=sample_rate, width=2, channels=1).event()
+                    )
+                    stats.audio_started = True
+
+                pcm = float32_to_pcm_int16(chunk)
+                if not pcm:
+                    continue
+                await self.write_event(
+                    AudioChunk(rate=sample_rate, width=2, channels=1, audio=pcm).event()
+                )
+                if stats.first_chunk_sent_at is None:
+                    stats.first_chunk_sent_at = time.monotonic()
+                stats.total_samples += len(chunk)
+        finally:
+            # Runs on normal completion, a synthesis error, AND on the
+            # caller cancelling this coroutine (client disconnect
+            # mid-stream) -- always signals PocketTtsSynthesizer's producer
+            # thread to stop and releases its lock (see app/tts_session.py).
+            await agen.aclose()
+
+        return stats
+
+    async def _handle_synthesize(self, event: Event) -> None:
+        """Handle a Wyoming TTS request: text in, streamed audio-chunks out.
+
+        Streams audio to the client as soon as Pocket TTS yields each chunk
+        (see app/tts_session.py) rather than buffering the whole utterance
+        first -- this is what keeps time-to-first-audio low.
+        """
+        if self._tts_synthesizer is None:
+            _LOGGER.warning("Received synthesize event but TTS is disabled (tts_enabled: false)")
+            await self.write_event(
+                WyomingError(text="TTS is disabled on this add-on", code="tts_disabled").event()
+            )
+            return
+
+        synthesize = Synthesize.from_event(event)
+        text = synthesize.text
+        voice_name = synthesize.voice.name if synthesize.voice else None
+        sample_rate = self._tts_synthesizer.sample_rate
+
+        if not text or not text.strip():
+            # Empty text: answer with a well-formed, empty audio response
+            # rather than erroring -- Wyoming clients (and HA's Assist
+            # pipeline) can legitimately send this, e.g. for a no-op reply.
+            await self.write_event(AudioStart(rate=sample_rate, width=2, channels=1).event())
+            await self.write_event(AudioStop().event())
+            return
+
+        requested_at = time.monotonic()
+        try:
+            stats = await self._stream_synthesis_chunks(text, voice_name, sample_rate)
+        except Exception as err:
+            _LOGGER.error("TTS synthesis failed: %s", err, exc_info=True)
+            await self.write_event(AudioStart(rate=sample_rate, width=2, channels=1).event())
+            await self.write_event(AudioStop().event())
+            await self.write_event(
+                WyomingError(text="TTS synthesis failed", code="tts_synthesis_error").event()
+            )
+            return
+
+        if not stats.audio_started:
+            # Non-empty text produced no audio at all -- shouldn't normally
+            # happen, but still answer rather than leaving the client
+            # waiting forever for audio-stop.
+            await self.write_event(AudioStart(rate=sample_rate, width=2, channels=1).event())
+        await self.write_event(AudioStop().event())
+
+        if self._tts_log_performance:
+            self._log_tts_performance(text, sample_rate, requested_at, stats)
+
+    def _log_tts_performance(
+        self, text: str, sample_rate: int, requested_at: float, stats: "_SynthesisStats"
+    ) -> None:
+        synthesis_time = time.monotonic() - requested_at
+        audio_duration = stats.total_samples / sample_rate if sample_rate else 0.0
+        ttfa_generated = (
+            stats.first_chunk_generated_at - requested_at if stats.first_chunk_generated_at else 0.0
+        )
+        ttfa_sent = stats.first_chunk_sent_at - requested_at if stats.first_chunk_sent_at else 0.0
+        rtf = synthesis_time / audio_duration if audio_duration > 0 else 0.0
+        _LOGGER.info(
+            "TTS completed: model=%s chars=%d ttfa_generated=%.3fs ttfa_sent=%.3fs "
+            "synthesis=%.2fs audio=%.2fs rtf=%.2f",
+            self._tts_model_name,
+            len(text),
+            ttfa_generated,
+            ttfa_sent,
+            synthesis_time,
+            audio_duration,
+            rtf,
+        )

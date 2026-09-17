@@ -1,4 +1,88 @@
-# Changelog - HomeIntent Moonshine STT Add-on
+# Changelog - HomeIntent Moonshine Voice Add-on
+
+## [0.2.0] - 2026-09-17
+
+Adds local German text-to-speech (Kyutai Pocket TTS) alongside the existing Moonshine
+STT, and fixes the technical review findings from v0.1.2. See
+`ABSCHLUSSBERICHT_V0.2.0.md` for the full verification report. Add-on display name
+changed to "HomeIntent Moonshine Voice"; the Supervisor slug
+(`homeintent-moonshine-stt`) is deliberately unchanged so existing installs update in
+place.
+
+### Added
+- **Kyutai Pocket TTS** (`pocket-tts` PyPI package, MIT-licensed code, verified
+  against upstream source): local, CPU-first, streaming German text-to-speech.
+  - `tts_enabled` (default `false` -- see "Changed" below for why), `tts_model`
+    (`german` default / `german_24l`), `tts_voice` (default `juergen`, the only real
+    German preset voice), `tts_log_performance`.
+  - Real incremental audio streaming via Pocket TTS's own
+    `generate_audio_stream()` generator API -- chunks are forwarded to the Wyoming
+    client as soon as they are decoded, not after the whole reply is synthesized.
+  - Combined Wyoming discovery: `Info(asr=[...], tts=[...])` reflects whichever of
+    `stt_enabled`/`tts_enabled` is actually on, supporting STT-only, TTS-only, and
+    both-enabled configurations.
+  - TTFA (generated/sent) + synthesis time + RTF performance logging, symmetric with
+    STT's own performance line, never logging synthesized text.
+  - Voice-state caching (`get_state_for_audio_prompt()` is "relatively slow" per
+    upstream) and a model-specific lock (independent of Moonshine's own STT lock)
+    serializing concurrent TTS requests without blocking STT.
+  - Graceful handling of empty text, synthesis errors, and client disconnect
+    mid-stream (the async generator's own `aclose()` releases the lock and signals
+    the producer thread to stop).
+- `stt_enabled` (default `true`): lets STT be disabled entirely for a TTS-only
+  deployment.
+- `float32_to_pcm_int16()` (`app/audio.py`): clips before converting Pocket TTS's
+  float32 output to the 16-bit PCM Wyoming's audio-chunk events carry.
+- CI: an upgrade-safety smoke test job that starts the add-on against a fake
+  Supervisor missing several newer config.yaml options (and two explicitly
+  null-valued), to catch a re-introduction of the v0.1.2 startup crash.
+- CI: `test_e2e_tts.py`, a real Pocket TTS Wyoming round-trip test (`pytest -m e2e`),
+  wired to a manually-triggered (`workflow_dispatch`) CI job rather than every
+  push/PR, to avoid a real model download on every normal change (see B30 in the
+  review prompt / `ABSCHLUSSBERICHT_V0.2.0.md`).
+
+### Changed
+- `numpy` pin bumped `1.24.3` → `2.4.6`: Pocket TTS requires `numpy>=2`; verified
+  Moonshine's own moonshine-voice 0.1.5 still imports and works correctly against
+  numpy 2.x (it declares no numpy version constraint of its own).
+- `tts_enabled` defaults to `false`: an add-on *upgrade* must not suddenly download a
+  PyTorch runtime and a Pocket TTS model (several hundred MB) for a previously
+  STT-only installation. New installations are documented to turn it on explicitly.
+- Dockerfile installs `torch` first, explicitly from PyTorch's own CPU wheel index
+  (`--index-url`, which *replaces* rather than merely extends the default index) --
+  an `--extra-index-url`-only install was found, during development, to still let
+  pip's resolver pick PyPI's default CUDA build, pulling ~1GB of unused `nvidia-*`
+  packages.
+- Docker `HEALTHCHECK`/discovery-service startup grace period increased (60s → 180s
+  for discovery's own poll loop) since a first-run Pocket TTS download can take
+  longer than plain Moonshine STT startup did.
+
+### Fixed (review findings from v0.1.2, see `ABSCHLUSSBERICHT_V0.2.0.md` for detail)
+- **CI Supervisor config sync**: the fake Supervisor stub used in CI now parses
+  `config.yaml`'s own `options:` block directly instead of a hand-duplicated dict,
+  so it cannot drift out of sync with the real add-on config the way it previously
+  did.
+- **Upgrade-safe option handling**: the production run script now falls back to
+  `config.yaml`'s own default whenever a Supervisor-provided option value is absent,
+  empty, or the literal string `"null"` -- previously, an upgrade with a
+  partially-migrated `options.json` could pass e.g. `--keyterm-boost null` straight
+  to argparse and crash the add-on on every start.
+- **HA vocabulary last-known-good**: `fetch_ha_vocabulary()` now returns a typed
+  `HaVocabularyResult(success, terms)` distinguishing a failed refresh from a
+  legitimately empty one; the periodic refresh loop keeps the previous vocabulary on
+  failure instead of silently wiping it out.
+- **Moonshine `set_keyterms()` locking**: the periodic HA vocabulary refresh's
+  `set_keyterms()` call is now serialized through the same lock used by streaming
+  STT sessions, closing a race between vocabulary refresh and concurrent audio
+  streaming.
+- **Real STT RTF**: performance logging now reports cumulative Moonshine inference
+  time (summed across `add_audio()` calls plus the final `stop()` pass), not
+  finalize-wall-time-over-audio-duration, which undercounted work already done
+  during streaming.
+- **Area+Entity contextual keyterms**: HA vocabulary now also generates "Area
+  Entity" combination terms (e.g. "Wohnzimmer Rolllade") from real
+  Entity→Area/Entity→Device→Area registry relationships, deterministically sorted
+  and capped to avoid a combinatorial explosion on large installs.
 
 ## [0.1.2] - 2026-09-17
 

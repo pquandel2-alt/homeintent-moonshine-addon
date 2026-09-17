@@ -63,6 +63,7 @@ def test_parses_same_keys_as_config_yaml(real_options, parsed_options):
 @pytest.mark.parametrize(
     "key",
     [
+        "stt_enabled",
         "model",
         "language",
         "log_level",
@@ -77,6 +78,10 @@ def test_parses_same_keys_as_config_yaml(real_options, parsed_options):
         "decode_incomplete_lines",
         "save_debug_audio",
         "debug_audio_max_files",
+        "tts_enabled",
+        "tts_model",
+        "tts_voice",
+        "tts_log_performance",
     ],
 )
 def test_parses_same_value_as_config_yaml(key, real_options, parsed_options):

@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from app.audio import pcm_int16_to_float32, validate_audio_format
+from app.audio import float32_to_pcm_int16, pcm_int16_to_float32, validate_audio_format
 
 
 class TestPcmConversion:
@@ -70,6 +70,47 @@ class TestPcmConversion:
         result = pcm_int16_to_float32(pcm_bytes)
         assert np.all(result >= -1.0)
         assert np.all(result <= 1.0)
+
+
+class TestFloat32ToPcmInt16:
+    """Tests for float32 -> int16 PCM conversion (Pocket TTS output, B8)."""
+
+    def test_silence_round_trips_to_zero(self):
+        pcm = float32_to_pcm_int16(np.zeros(10, dtype=np.float32))
+        assert pcm == b"\x00\x00" * 10
+
+    def test_positive_full_scale(self):
+        pcm = float32_to_pcm_int16(np.array([1.0], dtype=np.float32))
+        result = np.frombuffer(pcm, dtype=np.int16)
+        assert result[0] == 32767
+
+    def test_negative_full_scale(self):
+        pcm = float32_to_pcm_int16(np.array([-1.0], dtype=np.float32))
+        result = np.frombuffer(pcm, dtype=np.int16)
+        assert result[0] == -32767
+
+    def test_clips_overshoot_instead_of_wrapping(self):
+        """A model value slightly outside [-1.0, 1.0] must clip cleanly,
+        not wrap around to the opposite sign (which raw casting would do)."""
+        pcm = float32_to_pcm_int16(np.array([1.5, -1.5], dtype=np.float32))
+        result = np.frombuffer(pcm, dtype=np.int16)
+        assert result[0] == 32767
+        assert result[1] == -32767
+
+    def test_output_byte_length_matches_sample_count(self):
+        samples = np.linspace(-1.0, 1.0, num=137, dtype=np.float32)
+        pcm = float32_to_pcm_int16(samples)
+        assert len(pcm) == 137 * 2
+
+    def test_empty_input_produces_empty_output(self):
+        pcm = float32_to_pcm_int16(np.array([], dtype=np.float32))
+        assert pcm == b""
+
+    def test_no_clipping_within_range(self):
+        samples = np.array([0.5, -0.5, 0.25], dtype=np.float32)
+        pcm = float32_to_pcm_int16(samples)
+        result = np.frombuffer(pcm, dtype=np.int16)
+        np.testing.assert_array_equal(result, (samples * 32767.0).astype(np.int16))
 
 
 class TestAudioFormatValidation:

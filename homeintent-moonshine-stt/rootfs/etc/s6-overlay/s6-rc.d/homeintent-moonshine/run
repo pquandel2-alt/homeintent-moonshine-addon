@@ -6,6 +6,7 @@ set -e
 
 export PYTHONUNBUFFERED=1
 export MOONSHINE_VOICE_CACHE=/data/models
+export HF_HOME=/data/models/pocket-tts
 
 # Read a config option, falling back to a hard-coded default (matching
 # config.yaml's own default) whenever the Supervisor value is absent,
@@ -37,8 +38,9 @@ config_bool_or_default() {
 }
 
 # Defaults below must match homeintent-moonshine-stt/config.yaml's `options:`
-# block exactly -- see app/tests/test_config_defaults.py, which fails CI if
-# they drift apart.
+# block exactly -- see app/tests/test_fake_supervisor_config_sync.py, which
+# fails CI if they drift apart.
+STT_ENABLED=$(config_bool_or_default 'stt_enabled' 'true')
 MODEL=$(config_or_default 'model' 'small')
 LANGUAGE=$(config_or_default 'language' 'de')
 LOG_LEVEL=$(config_or_default 'log_level' 'INFO')
@@ -53,6 +55,10 @@ VAD_THRESHOLD=$(config_or_default 'vad_threshold' '0.5')
 DECODE_INCOMPLETE_LINES=$(config_bool_or_default 'decode_incomplete_lines' 'true')
 SAVE_DEBUG_AUDIO=$(config_bool_or_default 'save_debug_audio' 'false')
 DEBUG_AUDIO_MAX_FILES=$(config_or_default 'debug_audio_max_files' '100')
+TTS_ENABLED=$(config_bool_or_default 'tts_enabled' 'false')
+TTS_MODEL=$(config_or_default 'tts_model' 'german')
+TTS_VOICE=$(config_or_default 'tts_voice' 'juergen')
+TTS_LOG_PERFORMANCE=$(config_bool_or_default 'tts_log_performance' 'true')
 
 # EXTRA_KEYTERMS is a free-text field; "null" is a legitimate (if unlikely)
 # keyterm-list entry only if a user literally typed it, but an *absent*
@@ -63,9 +69,17 @@ if [ "${EXTRA_KEYTERMS}" = "null" ]; then
     EXTRA_KEYTERMS=""
 fi
 
-bashio::log.info "Starting HomeIntent Moonshine STT"
-bashio::log.info "Model: ${MODEL}"
-bashio::log.info "Language: ${LANGUAGE}"
+bashio::log.info "Starting HomeIntent Moonshine Voice"
+bashio::log.info "STT enabled: ${STT_ENABLED}"
+if bashio::var.true "${STT_ENABLED}"; then
+    bashio::log.info "STT model: ${MODEL}"
+    bashio::log.info "STT language: ${LANGUAGE}"
+fi
+bashio::log.info "TTS enabled: ${TTS_ENABLED}"
+if bashio::var.true "${TTS_ENABLED}"; then
+    bashio::log.info "TTS model: ${TTS_MODEL}"
+    bashio::log.info "TTS voice: ${TTS_VOICE}"
+fi
 bashio::log.info "Log Level: ${LOG_LEVEL}"
 
 # Build flags
@@ -80,6 +94,26 @@ FLAGS+=("--ha-vocabulary-refresh-minutes" "${HA_VOCABULARY_REFRESH_MINUTES}")
 FLAGS+=("--transcription-interval" "${TRANSCRIPTION_INTERVAL}")
 FLAGS+=("--vad-threshold" "${VAD_THRESHOLD}")
 FLAGS+=("--debug-audio-max-files" "${DEBUG_AUDIO_MAX_FILES}")
+FLAGS+=("--tts-model" "${TTS_MODEL}")
+FLAGS+=("--tts-voice" "${TTS_VOICE}")
+
+if bashio::var.true "${STT_ENABLED}"; then
+    FLAGS+=("--stt-enabled")
+else
+    FLAGS+=("--no-stt-enabled")
+fi
+
+if bashio::var.true "${TTS_ENABLED}"; then
+    FLAGS+=("--tts-enabled")
+else
+    FLAGS+=("--no-tts-enabled")
+fi
+
+if bashio::var.true "${TTS_LOG_PERFORMANCE}"; then
+    FLAGS+=("--tts-log-performance")
+else
+    FLAGS+=("--no-tts-log-performance")
+fi
 
 if [ "${LOG_LEVEL}" = "DEBUG" ]; then
     FLAGS+=("--debug")
