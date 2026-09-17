@@ -47,6 +47,27 @@ jobs:
             -e CI_MODEL=tiny \
             python:3.11-slim python3 /fake_supervisor.py
 
+      - name: Wait for the fake Supervisor to actually accept connections
+        run: |
+          # docker run -d returns as soon as the container starts, not once the Python
+          # HTTP server inside is listening. bashio::config hits the Supervisor API on
+          # the add-on's very first start, and s6-overlay treats a service failing on
+          # that first attempt as fatal (tears the whole container down) -- so a slow
+          # supervisor stub here is not just a delay, it fails the whole smoke test.
+          for i in $(seq 1 30); do
+            if docker exec supervisor python3 -c "
+          import urllib.request
+          urllib.request.urlopen('http://localhost/addons/self/options/config', timeout=2)
+          " 2>/dev/null; then
+              echo "Fake Supervisor ready after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Fake Supervisor stub never became ready"
+          docker logs supervisor || true
+          exit 1
+
       - name: Start add-on container via its real /init entrypoint
         run: |
           docker run -d --name moonshine-test --network moonshine-ci \
