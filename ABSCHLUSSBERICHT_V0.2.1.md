@@ -246,4 +246,59 @@ GitHub-Actions-Lauf verifiziert (siehe unten).
 
 ## Git / GitHub
 
-*(wird nach Push/CI-Check/Tag/Release unten vervollständigt)*
+- **Commit**: `19223c7` ("feat: sync STT vocabulary with Assist-exposed entities"),
+  gepusht auf `claude/moonshine-voice-stt-tts-73sjml` und direkt auf `master`
+  (bisheriges Vorgehen dieses Repos, wie bei v0.1.x/v0.2.0 beibehalten).
+- **CI (realer GitHub-Actions-Lauf für `19223c7`)**: **GRÜN** — alle Pflicht-Checks:
+  - `Lint` ✅ success
+  - `Type Check` ✅ success
+  - `Tests` ✅ success
+  - `Build` ✅ success, mit allen vier Jobs grün: `e2e-audio-transcribe`
+    (echtes Wyoming-STT-Roundtrip), `Build amd64 image + smoke test` (echter
+    Docker-Build + realer Container-Start + echtes Wyoming-Describe, inkl. des
+    Upgrade-Simulations-Jobs aus v0.2.0), `Build aarch64 image (QEMU,
+    build-only)`. Der TTS-E2E-Job (`workflow_dispatch`-only) wurde erwartungsgemäß
+    übersprungen (`skipped`), wie bei jedem normalen Push seit v0.2.0.
+- **Tag `v0.2.1`**: **FEHLGESCHLAGEN.** `git tag -a v0.2.1 19223c7 -m "..."` gelang
+  lokal; `git push origin v0.2.1` scheiterte mit:
+  ```
+  error: RPC failed; HTTP 403 curl 22 The requested URL returned error: 403
+  send-pack: unexpected disconnect while reading sideband packet
+  fatal: the remote end hung up unexpectedly
+  ```
+  Das ist dieselbe Einschränkung wie beim v0.2.0-Release: normale Branch-Pushes
+  (`git push origin <branch>`) funktionieren mit der aktuell autorisierten
+  Claude-GitHub-App, ein `git push` eines Tag-Refs wird jedoch von GitHub selbst
+  mit 403 abgelehnt (kein Netzwerk-Policy-Block dieser Sandbox — der zugrunde
+  liegende `CONNECT` zu github.com gelingt; der 403 kommt von GitHub). Vermutlich
+  fehlt der App die Berechtigung, Tag-Refs zu erstellen. Der lokale Tag wurde
+  wieder gelöscht, um keinen falschen Eindruck zu hinterlassen.
+- **GitHub Release**: **NICHT VERÖFFENTLICHT**, da kein Tag existiert und keines
+  der verfügbaren GitHub-MCP-Tools eine Release- oder Tag-Ref-Erstellung anbietet
+  (nur Lese-Tools: `get_latest_release`, `get_release_by_tag`, `list_releases`,
+  `list_tags`, `get_tag`).
+
+**Nächster Schritt für den Nutzer** (wie schon bei v0.2.0 erfolgreich genutzt):
+GitHub erlaubt, beim Anlegen eines Release direkt einen neuen Tag auf einem
+bestimmten Commit zu erzeugen. Dafür genügt es, diese vorausgefüllte URL zu öffnen
+und **Ziel-Commit `19223c7`** auszuwählen (Tag `v0.2.1` existiert noch nicht und
+wird beim Veröffentlichen automatisch erstellt):
+
+`https://github.com/pquandel2-alt/homeintent-moonshine-addon/releases/new?tag=v0.2.1&target=19223c7&title=HomeIntent+Moonshine+Voice+v0.2.1`
+
+Vorgeschlagene Release-Notes:
+
+> **What's changed**
+> - Assist-aware STT vocabulary: automatic keyterm generation now reflects
+>   exactly the entities exposed to Home Assistant Assist, computed the same
+>   way Home Assistant Core itself determines effective exposure — including
+>   entity aliases and Area+Entity/Area+Alias combinations (e.g. "Wohnzimmer
+>   Rolllade", "Wohnzimmer Rollo").
+> - Reliability: a successful refresh that no longer sees a previously-exposed
+>   entity removes it; a failed refresh (HA unreachable) still keeps the
+>   last-known-good vocabulary, as before.
+> - Existing features unchanged: Moonshine STT streaming/locking and Kyutai
+>   Pocket TTS are untouched by this release.
+>
+> **Upgrade**: normal update through the Home Assistant Add-on Store — no
+> manual installation steps required.
