@@ -261,12 +261,21 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install -r homeintent-moonshine-stt/requirements-runtime.txt
+      - run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+          pip install scipy pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
 
       - name: Generate fixture
         run: |
           cd homeintent-moonshine-stt
           python3 scripts/generate_stt_fixture.py app/tests/fixtures/schalte_licht_wohnzimmer.wav
+
+      - name: Verify the freshly generated fixture actually transcribes correctly
+        env:
+          E2E_REQUIRE_ONLINE: "1"
+        run: |
+          cd homeintent-moonshine-stt
+          python3 -m pytest app/tests/test_e2e_transcribe.py -v -m e2e
 
       - uses: actions/upload-artifact@v4
         with:

@@ -19,6 +19,7 @@ import wave
 from pathlib import Path
 
 import numpy as np
+from scipy.signal import resample_poly
 
 GERMAN_SENTENCE = "Schalte das Licht im Wohnzimmer ein."
 TTS_LANGUAGE = "de-de"
@@ -26,16 +27,18 @@ TTS_VOICE = "piper_de_DE-thorsten-medium"
 SAMPLE_RATE = 16000
 
 
-def _resample_linear(
-    samples: np.ndarray, source_rate: int, target_rate: int
-) -> np.ndarray:
-    duration_s = samples.shape[0] / source_rate
-    n_target = int(round(duration_s * target_rate))
-    source_times = np.arange(samples.shape[0]) / source_rate
-    target_times = np.arange(n_target) / target_rate
-    resampled: np.ndarray = np.interp(target_times, source_times, samples).astype(
-        np.float32
-    )
+def _resample(samples: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+    # A naive linear-interpolation resample (np.interp) has no anti-aliasing
+    # filter: it previously produced a fixture that visibly distorted
+    # high-frequency consonants (e.g. Moonshine misheard "Licht" as "jetzt"
+    # from a linearly-resampled fixture, but transcribed the vowel-heavy
+    # "Wohnzimmer" correctly). resample_poly does polyphase filtering with a
+    # proper anti-aliasing lowpass, which a naive interpolation lacks.
+    from math import gcd
+
+    g = gcd(source_rate, target_rate)
+    up, down = target_rate // g, source_rate // g
+    resampled: np.ndarray = resample_poly(samples, up, down).astype(np.float32)
     return resampled
 
 
@@ -51,7 +54,7 @@ def generate(output_path: Path) -> None:
 
     audio = np.asarray(samples, dtype=np.float32)
     if source_rate != SAMPLE_RATE:
-        audio = _resample_linear(audio, source_rate, SAMPLE_RATE)
+        audio = _resample(audio, source_rate, SAMPLE_RATE)
 
     pcm_int16 = np.clip(audio * 32768.0, -32768, 32767).astype(np.int16)
 
