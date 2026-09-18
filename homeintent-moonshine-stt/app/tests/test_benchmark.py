@@ -10,7 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from app.benchmark import BenchmarkResult, chunk_pcm, read_wav_pcm, run_benchmark
+from app.benchmark import (
+    BenchmarkResult,
+    chunk_pcm,
+    read_wav_pcm,
+    run_benchmark,
+    synthetic_keyterms,
+)
 
 
 def _write_wav(path: Path, num_samples: int = 1600, rate: int = 16000) -> None:
@@ -60,14 +66,52 @@ class TestChunkPcm:
         assert list(chunk_pcm(b"", chunk_bytes=100)) == []
 
 
+def _result(**overrides: object) -> BenchmarkResult:
+    defaults: dict[str, object] = {
+        "model": "small",
+        "transcription_interval": 0.5,
+        "decode_incomplete_lines": True,
+        "keyterm_count": 0,
+        "audio_duration_s": 2.0,
+        "processing_time_s": 1.0,
+        "inference_time_s": 1.0,
+        "finalize_time_s": 0.1,
+        "chunk_count": 5,
+        "add_audio_compute_max_s": 0.05,
+        "average_chunk_compute_s": 0.02,
+        "transcript": "x",
+    }
+    defaults.update(overrides)
+    return BenchmarkResult(**defaults)  # type: ignore[arg-type]
+
+
 class TestBenchmarkResult:
     def test_rtf_below_one_when_faster_than_real_time(self):
-        result = BenchmarkResult(audio_duration_s=2.0, processing_time_s=1.0, transcript="x")
+        result = _result(audio_duration_s=2.0, inference_time_s=1.0)
         assert result.rtf == 0.5
 
     def test_rtf_infinite_for_zero_duration_audio(self):
-        result = BenchmarkResult(audio_duration_s=0.0, processing_time_s=1.0, transcript="")
+        result = _result(audio_duration_s=0.0, inference_time_s=1.0)
         assert result.rtf == float("inf")
+
+    def test_rtf_uses_inference_time_not_wall_processing_time(self):
+        """The wall clock (processing_time_s) includes Python/asyncio
+        overhead the real production RTF metric does not -- rtf must match
+        app/handler.py's own definition (inference_time / audio_duration)."""
+        result = _result(audio_duration_s=2.0, processing_time_s=5.0, inference_time_s=1.0)
+        assert result.rtf == 0.5
+
+
+class TestSyntheticKeyterms:
+    def test_generates_requested_count(self):
+        assert len(synthetic_keyterms(50)) == 50
+
+    def test_zero_count_yields_empty_list(self):
+        assert synthetic_keyterms(0) == []
+
+    def test_terms_are_unique(self):
+        terms = synthetic_keyterms(100)
+        assert len(set(terms)) == 100
 
 
 class TestRunBenchmark:
@@ -95,9 +139,57 @@ class TestRunBenchmark:
         mock_stream.stop.side_effect = fake_stop
         pcm_bytes = b"\x00\x00" * 1600  # 0.1s at 16kHz
 
-        result = await run_benchmark(mock_transcriber, pcm_bytes, sample_rate=16000, chunk_ms=30)
+        result = await run_benchmark(
+            mock_transcriber,
+            pcm_bytes,
+            sample_rate=16000,
+            chunk_ms=30,
+            model="small",
+            transcription_interval=0.5,
+            decode_incomplete_lines=True,
+            keyterm_count=0,
+        )
 
         assert result.audio_duration_s == pytest.approx(0.1)
         assert result.transcript == "hallo welt"
         assert result.processing_time_s >= 0.0
+        assert result.model == "small"
         mock_stream.close.assert_called_once()
+        mock_transcriber.set_keyterms.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_keyterm_count_applies_synthetic_keyterms(self, mock_transcriber, mock_stream):
+        pcm_bytes = b"\x00\x00" * 1600
+
+        await run_benchmark(
+            mock_transcriber,
+            pcm_bytes,
+            sample_rate=16000,
+            chunk_ms=30,
+            model="small",
+            transcription_interval=0.5,
+            decode_incomplete_lines=True,
+            keyterm_count=50,
+        )
+
+        mock_transcriber.set_keyterms.assert_called_once()
+        applied = mock_transcriber.set_keyterms.call_args.args[0]
+        assert len(applied) == 50
+
+    @pytest.mark.asyncio
+    async def test_chunk_metrics_are_populated(self, mock_transcriber, mock_stream):
+        pcm_bytes = b"\x00\x00" * 1600
+
+        result = await run_benchmark(
+            mock_transcriber,
+            pcm_bytes,
+            sample_rate=16000,
+            chunk_ms=30,
+            model="tiny",
+            transcription_interval=0.5,
+            decode_incomplete_lines=True,
+            keyterm_count=0,
+        )
+
+        assert result.chunk_count > 0
+        assert result.average_chunk_compute_s >= 0.0

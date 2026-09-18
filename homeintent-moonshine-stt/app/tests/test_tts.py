@@ -108,15 +108,20 @@ class TestLoadTtsModel:
         with the configured value, and before the model itself loads (so
         it reliably takes effect -- see torch's own docs)."""
         call_order: list[str] = []
+
+        def _record_set_threads(n: int) -> None:
+            call_order.append("set_threads")
+
+        def _record_load_model(**kw: object) -> MagicMock:
+            call_order.append("load_model")
+            return MagicMock(has_voice_cloning=True, sample_rate=24000)
+
         with (
             patch("app.tts.TTSModel") as mock_tts_model_cls,
             patch("torch.set_num_threads") as mock_set_threads,
         ):
-            mock_set_threads.side_effect = lambda n: call_order.append("set_threads")
-            mock_tts_model_cls.load_model.side_effect = lambda **kw: (
-                call_order.append("load_model"),
-                MagicMock(has_voice_cloning=True, sample_rate=24000),
-            )[1]
+            mock_set_threads.side_effect = _record_set_threads
+            mock_tts_model_cls.load_model.side_effect = _record_load_model
             load_tts_model(model="german", cache_dir=tmp_path, num_threads=4)
 
         mock_set_threads.assert_called_once_with(4)
