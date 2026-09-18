@@ -40,13 +40,16 @@ from app.handler import MoonshineAsrHandler
 from app.models import load_transcriber
 from app.tests.e2e_infra import handle_infra_or_reraise
 
-FIXTURE_PATH = Path(__file__).parent / "fixtures" / "schalte_licht_wohnzimmer.wav"
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "schalte_lampe_wohnzimmer.wav"
 
-# The fixture's spoken sentence is "Schalte das Licht im Wohnzimmer ein."
+# The fixture's spoken sentence is "Schalte die Lampe im Wohnzimmer ein."
 # -- both keywords must appear for the test to pass; a real German ASR
 # model recognizing this short, clear smart-home command must get both,
-# not just one, or something is meaningfully wrong.
-EXPECTED_KEYWORDS = ("licht", "wohnzimmer")
+# not just one, or something is meaningfully wrong. (An earlier fixture
+# used "Licht" instead of "Lampe", but that word was systematically
+# misheard by Moonshine's tiny-streaming-de model with this Piper voice
+# across several real CI runs -- see app/tests/fixtures/README.md.)
+EXPECTED_KEYWORDS = ("lampe", "wohnzimmer")
 
 WYOMING_SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 1024  # ~64ms per chunk at 16kHz, a realistic Wyoming chunk size

@@ -268,7 +268,7 @@ jobs:
       - name: Generate fixture
         run: |
           cd homeintent-moonshine-stt
-          python3 scripts/generate_stt_fixture.py app/tests/fixtures/schalte_licht_wohnzimmer.wav
+          python3 scripts/generate_stt_fixture.py app/tests/fixtures/schalte_lampe_wohnzimmer.wav
 
       - name: Verify the freshly generated fixture actually transcribes correctly
         env:
@@ -279,14 +279,14 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: schalte_licht_wohnzimmer-wav
-          path: homeintent-moonshine-stt/app/tests/fixtures/schalte_licht_wohnzimmer.wav
+          name: schalte_lampe_wohnzimmer-wav
+          path: homeintent-moonshine-stt/app/tests/fixtures/schalte_lampe_wohnzimmer.wav
           retention-days: 14
 
       - name: Print fixture as base64 (artifact download is blocked from the dev sandbox)
         run: |
           echo "===FIXTURE_B64_START==="
-          base64 -w0 homeintent-moonshine-stt/app/tests/fixtures/schalte_licht_wohnzimmer.wav
+          base64 -w0 homeintent-moonshine-stt/app/tests/fixtures/schalte_lampe_wohnzimmer.wav
           echo ""
           echo "===FIXTURE_B64_END==="
 

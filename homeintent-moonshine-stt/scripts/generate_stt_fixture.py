@@ -13,17 +13,23 @@ app/tests/test_e2e_transcribe.py. The output of this script is committed
 once to the repository as a fixed fixture; the real STT e2e test no longer
 runs TTS at all.
 
-Piper's underlying vocoder is stochastic (it samples from a noise
-distribution), so two synthesis calls for the same text do NOT produce
-identical audio, and real Moonshine transcription of them can differ --
-one earlier attempt was misheard as "Schalte das jetzt im Wohnzimmer ein.",
-another as "Schalte das Ditting Wohnzimmer ein.", both from otherwise
-plausible-sounding audio. Rather than committing whichever candidate came
-out of a single synthesis call, this script synthesizes repeatedly and
-keeps the FIRST candidate that a real Moonshine transcription (the exact
-round trip app/tests/test_e2e_transcribe.py runs) actually recognizes
-correctly, so the fixture committed to the repo is empirically verified,
-not merely generated.
+The original sentence, "Schalte das Licht im Wohnzimmer ein.", turned out
+to be a bad choice: this Piper voice's rendering of "Licht" was
+systematically misheard by Moonshine's tiny-streaming-de model across
+several real CI runs (as "jetzt", "Ditting", "Setting" -- never correctly),
+consistently within a single process but varying between separate CI runs
+(likely onnxruntime threading nondeterminism in the quantized model, not
+retryable within one process). Switched to "Schalte die Lampe im
+Wohnzimmer ein." instead, which Moonshine transcribes correctly.
+
+As a safety net against any future choice of sentence/voice having the
+same problem, this script still synthesizes repeatedly and only keeps a
+candidate that a real Moonshine transcription (the exact round trip
+app/tests/test_e2e_transcribe.py runs) actually recognizes correctly, so
+the fixture committed to the repo is empirically verified, not merely
+generated. If a single process's repeated attempts keep failing (as
+happened with "Licht"), that's a signal the sentence itself needs
+changing, not just another synthesis attempt.
 """
 
 import asyncio
@@ -36,7 +42,7 @@ from scipy.signal import resample_poly
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-GERMAN_SENTENCE = "Schalte das Licht im Wohnzimmer ein."
+GERMAN_SENTENCE = "Schalte die Lampe im Wohnzimmer ein."
 TTS_LANGUAGE = "de-de"
 TTS_VOICE = "piper_de_DE-thorsten-medium"
 SAMPLE_RATE = 16000
@@ -120,6 +126,6 @@ if __name__ == "__main__":
     output = (
         Path(sys.argv[1])
         if len(sys.argv) > 1
-        else Path("app/tests/fixtures/schalte_licht_wohnzimmer.wav")
+        else Path("app/tests/fixtures/schalte_lampe_wohnzimmer.wav")
     )
     generate(output, cache_root=Path("/tmp/moonshine-fixture-gen-cache"))
