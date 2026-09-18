@@ -352,7 +352,6 @@ def _load_and_bias_transcriber(
     if effective_keyterms:
         transcriber.set_keyterms(effective_keyterms)
 
-    _log_startup_banner(args, manual_keyterms, effective_keyterms)
     return transcriber, manual_keyterms, ha_terms
 
 

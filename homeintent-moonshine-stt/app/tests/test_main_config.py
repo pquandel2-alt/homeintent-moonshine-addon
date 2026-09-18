@@ -6,6 +6,7 @@ into the s6 supervision tree) for an invalid TTS model.
 """
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +14,7 @@ from app.__main__ import (
     _load_engines,
     _load_json_config_overrides,
     build_arg_parser,
+    main,
 )
 
 
@@ -216,3 +218,52 @@ class TestTtsVoiceValidationAndWarmup:
 
         assert engines is not None
         assert engines.tts_synthesizer is not None
+
+
+class TestStartupBannerLoggedOnce:
+    """Item 24: a real production log showed the full startup banner
+    (version, STT/TTS config summary) printed TWICE -- once from inside
+    _load_and_bias_transcriber() (before Pocket TTS even started loading)
+    and once again from main() after everything finished loading. Only the
+    second, fully-informed call (with the real tts_enabled/tts_synthesizer
+    state) should ever run; loading itself should still emit its own
+    incremental "Loading X..."/"X ready" lines (already logged by
+    app/models.py and app/tts.py), just not a second full banner."""
+
+    def test_load_and_bias_transcriber_does_not_log_the_banner(self):
+        from app.__main__ import _load_and_bias_transcriber
+
+        args = _parse([])
+        args.use_ha_vocabulary = False
+        with (
+            patch("app.__main__.load_transcriber") as mock_load,
+            patch("app.__main__._log_startup_banner") as mock_banner,
+        ):
+            mock_load.return_value = MagicMock()
+            result = _load_and_bias_transcriber(args)
+
+        assert result is not None
+        mock_banner.assert_not_called()
+
+    def test_main_logs_startup_banner_exactly_once(self):
+        argv = ["prog", "--no-tts-enabled"]
+        with (
+            patch.object(sys, "argv", argv),
+            patch("app.__main__.load_transcriber") as mock_load,
+            patch("app.__main__.fetch_ha_vocabulary"),
+            patch("app.__main__._log_startup_banner") as mock_banner,
+            patch("app.__main__.AsyncTcpServer") as mock_server_cls,
+        ):
+            mock_load.return_value = MagicMock()
+            mock_server = MagicMock()
+
+            async def _fake_run(handler_factory):
+                return None
+
+            mock_server.run.side_effect = _fake_run
+            mock_server_cls.return_value = mock_server
+
+            exit_code = main()
+
+        assert exit_code == 0
+        mock_banner.assert_called_once()

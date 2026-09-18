@@ -135,6 +135,23 @@ DEFAULT_WS_URL = "ws://supervisor/core/websocket"
 CONNECT_TIMEOUT = 10.0
 COMMAND_TIMEOUT = 10.0
 
+# websockets==17.1's own default for `max_size` is 1 MiB (1_048_576 bytes) --
+# see websockets.connect()'s signature. On a real, larger Home Assistant
+# installation, a single `get_states` or `config/entity_registry/list`
+# response can exceed that easily (verified in production: a real install
+# hit "sent 1009 (message too big); frame exceeds limit of 1048576 bytes"
+# and HA vocabulary silently produced 0 keyterms as a result). This
+# connection is strictly to `ws://supervisor/core/websocket` -- the local,
+# trusted Supervisor-proxied Core API on the add-on's own internal Docker
+# network, never a public or third-party endpoint -- so a large, explicit
+# limit (rather than max_size=None, which would accept a response of
+# unbounded size) is the safer choice: it comfortably covers even very
+# large real installations (tens of thousands of entities) while still
+# guarding against unbounded memory use if the connection were ever
+# misdirected or the response malformed. 32 MiB is generous headroom over
+# any realistic registry/state payload size.
+MAX_WS_MESSAGE_SIZE = 32 * 1024 * 1024
+
 # The identifier Home Assistant's built-in Assist pipeline uses when calling
 # async_should_expose()/the expose_entity WS commands -- see module
 # docstring for the exact source verification.
@@ -843,7 +860,9 @@ async def fetch_ha_vocabulary(
         return HaVocabularyResult(success=False)
 
     try:
-        async with websockets.connect(ws_url, open_timeout=CONNECT_TIMEOUT) as ws:
+        async with websockets.connect(
+            ws_url, open_timeout=CONNECT_TIMEOUT, max_size=MAX_WS_MESSAGE_SIZE
+        ) as ws:
             await _authenticate(ws, token)
 
             command_id = itertools.count(1)

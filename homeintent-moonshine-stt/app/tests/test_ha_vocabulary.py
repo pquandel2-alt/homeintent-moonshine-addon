@@ -14,6 +14,7 @@ import pytest
 
 from app.ha_vocabulary import (
     CONVERSATION_ASSISTANT,
+    MAX_WS_MESSAGE_SIZE,
     HaVocabularyResult,
     build_legacy_pseudo_entities,
     clean_term,
@@ -803,9 +804,20 @@ def _full_script(
     return script
 
 
-def _fake_websockets_module(fake_ws: _FakeWebSocket) -> Any:
+def _fake_websockets_module(
+    fake_ws: _FakeWebSocket, connect_calls: list[dict[str, Any]] | None = None
+) -> Any:
     class _FakeWebsocketsModule:
-        def connect(self, url: str, open_timeout: float | None = None) -> _FakeWebSocket:
+        def connect(
+            self,
+            url: str,
+            open_timeout: float | None = None,
+            max_size: int | None = None,
+        ) -> _FakeWebSocket:
+            if connect_calls is not None:
+                connect_calls.append(
+                    {"url": url, "open_timeout": open_timeout, "max_size": max_size}
+                )
             return fake_ws
 
     return _FakeWebsocketsModule()
@@ -1558,3 +1570,122 @@ class TestFetchHaVocabularyLegacyEntities:
 
         sent_types = [msg.get("type") for msg in fake_ws.sent]
         assert "homeassistant/expose_entity/list" not in sent_types
+
+
+class TestLargeWebSocketPayloads:
+    """v0.2.4: a real, larger Home Assistant installation hit
+    ``ConnectionClosedError: sent 1009 (message too big); frame exceeds
+    limit of 1048576 bytes`` -- websockets==17.1's own default `max_size`
+    for `websockets.connect()` is 1 MiB, and a real `get_states`/
+    `config/entity_registry/list` response can exceed that. This produced
+    "effective keyterms=0" despite `use_ha_vocabulary=true`. See
+    MAX_WS_MESSAGE_SIZE's own docstring in app/ha_vocabulary.py for why a
+    large, explicit limit (not max_size=None) was chosen."""
+
+    def test_connect_uses_a_large_explicit_max_size(self, monkeypatch):
+        """The real fix: websockets.connect() must be called with a
+        max_size well above the library's 1 MiB default."""
+        import asyncio
+
+        import app.ha_vocabulary as mod
+
+        fake_ws = _FakeWebSocket(_full_script())
+        connect_calls: list[dict[str, Any]] = []
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws, connect_calls))
+
+        asyncio.run(fetch_ha_vocabulary(token="abc"))
+
+        assert len(connect_calls) == 1
+        assert connect_calls[0]["max_size"] == MAX_WS_MESSAGE_SIZE
+        # websockets' own default is 1 MiB (1_048_576) -- the whole point
+        # of this fix is that our configured limit is well above it.
+        assert MAX_WS_MESSAGE_SIZE > 1_048_576
+
+    @pytest.mark.asyncio
+    async def test_get_states_response_larger_than_1mib_is_handled(self, monkeypatch):
+        """Simulates a real large installation: a get_states response
+        alone exceeds 1 MiB. The connection must not break, and the
+        exposed entity's vocabulary/exposure must still come out correct
+        even with thousands of unrelated large states mixed in."""
+        import app.ha_vocabulary as mod
+
+        entities = [
+            {
+                "entity_id": "light.wohnzimmer",
+                "area_id": None,
+                "device_id": None,
+                "name": "Deckenlampe",
+                "original_name": None,
+                "entity_category": None,
+                "hidden_by": None,
+                "options": {CONVERSATION_ASSISTANT: {"should_expose": True}},
+            }
+        ]
+        # Pad with enough large sensor states to exceed 1 MiB once
+        # JSON-serialized -- a realistic shape for a large real installation
+        # (long attribute strings, e.g. weather/history/forecast entities).
+        states = [{"entity_id": "light.wohnzimmer", "attributes": {}}]
+        padding_attributes = {"forecast": "x" * 2000, "history": list(range(200))}
+        for i in range(1000):
+            states.append(
+                {
+                    "entity_id": f"sensor.padding_{i}",
+                    "attributes": dict(padding_attributes),
+                }
+            )
+        serialized_size = len(json.dumps(states).encode("utf-8"))
+        assert serialized_size > 1_048_576, "test fixture must actually exceed 1 MiB"
+
+        fake_ws = _FakeWebSocket(_full_script(entities=entities, states=states))
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
+
+        result = await fetch_ha_vocabulary(token="abc")
+
+        assert result.success is True
+        assert result.exposed_entity_count == 1
+        assert "Deckenlampe" in result.terms
+
+    @pytest.mark.asyncio
+    async def test_large_entity_registry_response_is_handled(self, monkeypatch):
+        """Same scenario but for a large config/entity_registry/list
+        response (many registry entities), as real large installations
+        also reported for registry responses, not just get_states."""
+        import app.ha_vocabulary as mod
+
+        entities = [
+            {
+                "entity_id": "light.wohnzimmer",
+                "area_id": None,
+                "device_id": None,
+                "name": "Deckenlampe",
+                "original_name": None,
+                "entity_category": None,
+                "hidden_by": None,
+                "options": {CONVERSATION_ASSISTANT: {"should_expose": True}},
+            }
+        ]
+        long_name_suffix = "x" * 500
+        for i in range(3000):
+            entities.append(
+                {
+                    "entity_id": f"sensor.padding_{i}",
+                    "area_id": None,
+                    "device_id": None,
+                    "name": f"Padding Sensor {i} {long_name_suffix}",
+                    "original_name": None,
+                    "entity_category": None,
+                    "hidden_by": "user",
+                    "options": {},
+                }
+            )
+        serialized_size = len(json.dumps(entities).encode("utf-8"))
+        assert serialized_size > 1_048_576, "test fixture must actually exceed 1 MiB"
+
+        fake_ws = _FakeWebSocket(_full_script(entities=entities))
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
+
+        result = await fetch_ha_vocabulary(token="abc")
+
+        assert result.success is True
+        assert result.exposed_entity_count == 1
+        assert "Deckenlampe" in result.terms
