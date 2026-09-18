@@ -10,13 +10,33 @@ import asyncio
 import logging
 import queue
 import threading
-from collections.abc import AsyncGenerator
+import time
+from collections.abc import AsyncGenerator, Callable
+from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
 from pocket_tts import TTSModel
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class TtsSynthesisStats:
+    """Per-request timing breakdown, populated by synthesize_stream() as it
+    runs (see its docstring). A fresh instance per request -- not shared or
+    reused across calls, and safe to read only after the request has
+    finished (normally or with an error), since the values are written
+    incrementally from a background thread while the request is in flight.
+
+    Only the synthesizer itself can distinguish real model compute time
+    from time spent waiting for the shared lock: both are opaque to
+    app/handler.py, which measures the outer request wall-time and its own
+    Wyoming I/O time instead (see app/handler.py's _SynthesisStats).
+    """
+
+    lock_wait_seconds: float = 0.0
+    model_generation_seconds: float = 0.0
 
 
 class TtsSynthesizer(Protocol):
@@ -33,7 +53,7 @@ class TtsSynthesizer(Protocol):
     def default_voice(self) -> str: ...
 
     def synthesize_stream(
-        self, text: str, voice: str | None = None
+        self, text: str, voice: str | None = None, stats: TtsSynthesisStats | None = None
     ) -> AsyncGenerator[np.ndarray, None]: ...
 
 
@@ -100,8 +120,71 @@ class PocketTtsSynthesizer:
         self._voice_state_cache[voice] = state
         return state
 
+    async def preload_default_voice(self) -> None:
+        """Resolve and cache the configured default voice's state.
+
+        Called once at add-on startup (see app/__main__.py's
+        _load_tts_synthesizer()) so an invalid ``tts_voice`` name is caught
+        immediately, with a clear startup error, instead of surfacing only
+        on the first real synthesize request. Also means the first real
+        request never pays get_state_for_audio_prompt()'s own documented
+        "relatively slow" cost (see app/tts.py's module docstring).
+        """
+        await self._resolve_voice_state(self._default_voice)
+
+    async def warmup(self, text: str = "Eins, zwei, drei.") -> float:
+        """Run one full, discarded synthesis of ``text`` and return its
+        wall-clock duration in seconds.
+
+        Rationale (see app/__main__.py's ``tts_warmup`` option): Pocket TTS
+        itself performs no explicit JIT compilation or quantization at load
+        time (verified directly against upstream source -- no
+        ``torch.compile``/``torch.jit`` call sites in the model's own
+        forward path), so there is no framework-level "first call recompiles
+        the graph" effect to warm away. What this warms up is the more
+        general, well-documented PyTorch-on-CPU cost of a process's very
+        first forward pass: the caching memory allocator and OpenMP/MKL
+        thread pools initialize lazily on first use and are otherwise paid
+        by whichever request happens to be first. Must be called only after
+        ``preload_default_voice()`` -- it reuses the now-cached voice state
+        rather than resolving it again.
+        """
+        started = time.monotonic()
+        async for _ in self.synthesize_stream(text, self._default_voice):
+            pass  # discarded: this call exists purely to warm up torch, no audio output
+        return time.monotonic() - started
+
+    def _make_producer(
+        self,
+        voice_state: object,
+        text: str,
+        chunk_queue: "queue.Queue[np.ndarray | BaseException | None]",
+        stop_event: threading.Event,
+        stats: TtsSynthesisStats | None,
+    ) -> "Callable[[], None]":
+        """Build the background-thread function that drives
+        generate_audio_stream() and forwards its chunks (and timing, if
+        ``stats`` is given) to synthesize_stream()'s consumer loop."""
+
+        def _produce() -> None:
+            try:
+                generation_started = time.monotonic()
+                for chunk in self._model.generate_audio_stream(voice_state, text):
+                    if stats is not None:
+                        stats.model_generation_seconds += time.monotonic() - generation_started
+                    if stop_event.is_set():
+                        return
+                    chunk_queue.put(chunk.detach().cpu().numpy())
+                    generation_started = time.monotonic()
+            except BaseException as err:  # noqa: BLE001 - forwarded to the consumer, not swallowed
+                chunk_queue.put(err)
+                return
+            chunk_queue.put(None)
+
+        return _produce
+
     async def synthesize_stream(
-        self, text: str, voice: str | None = None
+        self, text: str, voice: str | None = None, stats: TtsSynthesisStats | None = None
     ) -> AsyncGenerator[np.ndarray, None]:
         """Yield mono float32 numpy chunks as Pocket TTS generates them.
 
@@ -110,24 +193,28 @@ class PocketTtsSynthesizer:
         after the full utterance has been synthesized. Holds the shared
         lock for the entire request (start to finish) so concurrent TTS
         requests are serialized rather than interleaved on the same model.
+
+        If ``stats`` is given, it is populated with a timing breakdown
+        (see TtsSynthesisStats): ``lock_wait_seconds`` is how long this
+        call waited to acquire the shared lock (time some *other* request
+        was still using the model, not this request's own work);
+        ``model_generation_seconds`` is the cumulative real time spent
+        inside Pocket TTS's own generate_audio_stream() -- i.e. actual
+        model compute, excluding time this method spends waiting for the
+        consumer to pull a chunk off the queue (client backpressure/Wyoming
+        I/O time must never be counted as model time, see B-item "Client
+        backpressure").
         """
+        lock_wait_started = time.monotonic()
         voice_state = await self._resolve_voice_state(voice or self._default_voice)
 
         chunk_queue: queue.Queue[np.ndarray | BaseException | None] = queue.Queue()
         stop_event = threading.Event()
-
-        def _produce() -> None:
-            try:
-                for chunk in self._model.generate_audio_stream(voice_state, text):
-                    if stop_event.is_set():
-                        return
-                    chunk_queue.put(chunk.detach().cpu().numpy())
-            except BaseException as err:  # noqa: BLE001 - forwarded to the consumer, not swallowed
-                chunk_queue.put(err)
-                return
-            chunk_queue.put(None)
+        _produce = self._make_producer(voice_state, text, chunk_queue, stop_event, stats)
 
         async with self._lock:
+            if stats is not None:
+                stats.lock_wait_seconds = time.monotonic() - lock_wait_started
             thread = threading.Thread(target=_produce, daemon=True)
             thread.start()
             try:

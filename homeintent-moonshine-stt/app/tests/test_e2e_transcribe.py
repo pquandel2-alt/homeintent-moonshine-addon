@@ -11,8 +11,9 @@ utterance is synthesized on the fly with moonshine_voice's own TextToSpeech,
 so there is no audio-licensing question to resolve -- nothing is shipped or
 stored, only downloaded ephemerally at test time and discarded afterwards.
 
-If the network/model/voice is unavailable, the test is skipped with a clear
-reason rather than reporting a fabricated pass or silently vanishing.
+If the network/infrastructure is genuinely unavailable, the test is
+skipped with a clear reason. Anything else is treated as a real regression
+and must fail (see app/tests/e2e_infra.py).
 """
 
 import asyncio
@@ -27,6 +28,7 @@ from wyoming.server import AsyncTcpServer
 
 from app.handler import MoonshineAsrHandler
 from app.models import load_transcriber
+from app.tests.e2e_infra import is_infra_failure
 
 GERMAN_SENTENCE = "schalte das licht im wohnzimmer ein"
 EXPECTED_KEYWORDS = ("licht", "wohnzimmer")
@@ -122,12 +124,16 @@ async def test_german_audio_round_trip_produces_transcript(tmp_path: Path) -> No
     try:
         pcm_bytes = _synthesize_german_pcm()
     except Exception as e:
-        pytest.skip(f"German TTS voice unavailable ({type(e).__name__}: {e})")
+        if is_infra_failure(e):
+            pytest.skip(f"German TTS voice unreachable ({type(e).__name__}: {e})")
+        raise
 
     try:
         transcript = await _run_transcribe_round_trip(pcm_bytes, cache_root=tmp_path)
     except Exception as e:
-        pytest.skip(f"Moonshine STT model unavailable ({type(e).__name__}: {e})")
+        if is_infra_failure(e):
+            pytest.skip(f"Moonshine STT model unreachable ({type(e).__name__}: {e})")
+        raise
 
     assert transcript.strip(), "Expected a non-empty transcript for real German speech"
 
@@ -143,7 +149,9 @@ def test_synthesized_audio_is_valid_wyoming_pcm() -> None:
     try:
         pcm_bytes = _synthesize_german_pcm()
     except Exception as e:
-        pytest.skip(f"German TTS voice unavailable ({type(e).__name__}: {e})")
+        if is_infra_failure(e):
+            pytest.skip(f"German TTS voice unreachable ({type(e).__name__}: {e})")
+        raise
 
     assert len(pcm_bytes) % 2 == 0
     duration_s = (len(pcm_bytes) / 2) / WYOMING_SAMPLE_RATE

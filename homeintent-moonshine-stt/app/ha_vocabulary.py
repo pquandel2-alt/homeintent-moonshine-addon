@@ -10,9 +10,9 @@ home vocabulary.
 The vocabulary is now primarily built from entities that are *effectively
 exposed to Home Assistant Assist* (the ``"conversation"`` assistant) --
 not from the full registry indiscriminately. This mirrors Home Assistant
-Core's own exposure logic exactly, verified against the ``dev`` branch of
-home-assistant/core (commit ``6c2d4140cc9b9b926a0df96c6eaa87b249b893c1``,
-2026-09-17):
+Core's own exposure logic exactly, verified against the real ``dev`` branch
+source of home-assistant/core (fetched directly from
+``raw.githubusercontent.com/home-assistant/core/dev/...``, 2026-09-17):
 
 - ``homeassistant/components/homeassistant/exposed_entities.py``,
   ``ExposedEntities._is_default_exposed()`` -- the exact default-exposure
@@ -29,23 +29,68 @@ home-assistant/core (commit ``6c2d4140cc9b9b926a0df96c6eaa87b249b893c1``,
   ``"conversation.home_assistant"`` (that is a specific conversation
   *agent entity id*, a different concept).
 - The bulk WS command ``homeassistant/expose_entity/list`` is deliberately
-  NOT used as the source of truth here: it only returns entities whose
-  ``should_expose`` has already been computed-and-cached at least once
-  (lazily, the first time Assist actually looked at that entity), silently
-  omitting anything else even if it would default to exposed. Instead this
-  module reads ``config/entity_registry/list`` (which includes the same
-  cached ``options`` field, plus ``entity_category``/``hidden_by``/
-  ``disabled_by``) and ``get_states`` (for ``binary_sensor``/``sensor``
-  ``device_class``, needed by the default-exposure rule) and computes the
-  effective exposure itself -- reliable for every entity, not just
-  previously-cached ones.
+  NOT used as the primary source of truth for *registry* entities: per its
+  own handler (``ws_list_exposed_entities``), it only returns entities
+  whose ``should_expose`` has already been computed-and-cached at least
+  once (lazily, the first time Assist actually looked at that entity),
+  silently omitting anything else even if it would default to exposed.
+  Instead this module reads ``config/entity_registry/list`` (which includes
+  the same cached ``options`` field, plus ``entity_category``/
+  ``hidden_by``/``disabled_by``) and ``get_states`` (for ``binary_sensor``/
+  ``sensor`` ``device_class``, needed by the default-exposure rule) and
+  computes the effective exposure itself -- reliable for every registry
+  entity, not just previously-cached ones.
+
+Legacy (non-registry) entities
+-------------------------------
+Home Assistant can have entities with **no entity registry entry at all**
+(``ExposedEntities.async_should_expose()`` falls back to
+``_async_should_expose_legacy_entity()`` precisely for this case: "Settings
+for entities without a unique_id are stored in the store [not the entity
+registry]", per the class's own docstring). Such entities never appear in
+``config/entity_registry/list`` -- they only exist in the state machine
+(``get_states``). This module identifies them as ``get_states`` entity_ids
+absent from ``config/entity_registry/list``, and applies the *same*
+default-exposure rule as registry entities minus the parts that require a
+registry entry: ``_is_default_exposed(entity_id, registry_entry=None)``
+skips the ``entity_category``/``hidden_by`` check entirely (there is no
+registry entry to read them from) and resolves ``device_class`` the same
+way (``get_device_class()`` reads the live state's ``attributes.device_class``
+first) -- exactly what ``get_states`` already gives this module for every
+entity, registry or not.
+
+For an *explicit* override on a legacy entity, Home Assistant Core stores it
+in ``ExposedEntities.entities`` (a private, in-memory/storage-file
+structure with no dedicated bulk "read all legacy settings" WS command).
+The only read-only WS surface that reaches into it at all is
+``homeassistant/expose_entity/list``'s handler, which iterates
+``chain(exposed_entities.entities, entity_registry.entities)`` -- i.e. it
+*does* cover legacy entities, but (like the registry case above) only
+reports entities whose ``should_expose`` has already been computed-and-
+cached as ``True`` at least once; it never reports an explicit ``False`` or
+an entity that was simply never evaluated. This is used here *only* for
+legacy entities (where it is the only signal available at all for an
+explicit override), never as an additional/overriding signal for registry
+entities (which already have a strictly better source, their own cached
+``options``). Documented limitation: a legacy entity a user explicitly
+hid from Assist, but Assist has genuinely never evaluated since, cannot be
+distinguished read-only from "never evaluated" -- Home Assistant Core
+itself provides no other read API for that. It then falls back to the same
+default-exposure rule, which is the correct, non-invented behavior for the
+"never evaluated" case and only an unavoidable edge case for the
+"explicitly hidden but never (re-)computed" case.
+
+Legacy entities never contribute Area/Device combination terms (see
+:func:`_entity_area_id`): they have no registry entry, so they have no
+``area_id``/``device_id`` to look up at all -- never guessed.
 
 Strictly read-only: only ``config/*_registry/list``, ``config/entity_registry/
 get_entries`` (for exposed entities' aliases only, never the full registry),
-``get_states``, and ``homeassistant/expose_new_entities/get`` commands are
-issued. This module never calls a service, changes a state, or edits an
-automation/entity/exposure setting. Requires ``homeassistant_api: true`` in
-config.yaml, which grants the add-on the SUPERVISOR_TOKEN used to
+``get_states``, ``homeassistant/expose_new_entities/get``, and
+``homeassistant/expose_entity/list`` (legacy entities only, see above)
+commands are issued. This module never calls a service, changes a state, or
+edits an automation/entity/exposure setting. Requires ``homeassistant_api:
+true`` in config.yaml, which grants the add-on the SUPERVISOR_TOKEN used to
 authenticate here.
 """
 
@@ -246,6 +291,93 @@ def compute_exposed_entity_ids(
         if is_effectively_exposed(entity, device_class, expose_new_default):
             exposed.add(entity_id)
     return exposed
+
+
+def legacy_entity_ids(
+    entities: list[dict[str, Any]], states: list[dict[str, Any]] | None
+) -> set[str]:
+    """Entity ids present in ``get_states`` but absent from
+    ``config/entity_registry/list`` -- i.e. entities with no entity registry
+    entry at all (see module docstring, "Legacy (non-registry) entities").
+    """
+    registry_ids = {e.get("entity_id") for e in entities if e.get("entity_id")}
+    return {
+        entity_id
+        for state in states or []
+        if (entity_id := state.get("entity_id")) and entity_id not in registry_ids
+    }
+
+
+def compute_legacy_exposed_entity_ids(
+    legacy_ids: set[str],
+    states: list[dict[str, Any]] | None,
+    expose_new_default: bool,
+    explicitly_exposed_legacy_ids: set[str],
+) -> set[str]:
+    """Effective Assist exposure for legacy (non-registry) entities.
+
+    Mirrors ``_async_should_expose_legacy_entity()``: an explicit cached
+    ``should_expose`` (only observable read-only via
+    ``homeassistant/expose_entity/list``, see module docstring) always wins;
+    otherwise the same default-exposure rule as registry entities
+    (:func:`is_default_exposed` with no registry entry, i.e. no
+    ``entity_category``/``hidden_by`` to check) applies if
+    ``expose_new_default`` is enabled.
+    """
+    device_class_by_entity_id: dict[str, str | None] = {}
+    for state in states or []:
+        entity_id = state.get("entity_id")
+        if entity_id:
+            device_class_by_entity_id[entity_id] = (state.get("attributes") or {}).get(
+                "device_class"
+            )
+
+    exposed: set[str] = set()
+    for entity_id in legacy_ids:
+        if entity_id in explicitly_exposed_legacy_ids:
+            exposed.add(entity_id)
+            continue
+        if not expose_new_default:
+            continue
+        device_class = device_class_by_entity_id.get(entity_id)
+        if is_default_exposed({"entity_id": entity_id}, device_class):
+            exposed.add(entity_id)
+    return exposed
+
+
+def _legacy_entity_friendly_name(entity_id: str, states: list[dict[str, Any]] | None) -> str | None:
+    """A legacy entity's ``attributes.friendly_name`` from its live state --
+    the only officially stable name Home Assistant provides for an entity
+    with no registry entry (see module docstring)."""
+    for state in states or []:
+        if state.get("entity_id") == entity_id:
+            return clean_term((state.get("attributes") or {}).get("friendly_name"))
+    return None
+
+
+def build_legacy_pseudo_entities(
+    entity_ids: set[str], states: list[dict[str, Any]] | None
+) -> list[dict[str, Any]]:
+    """Build entity-shaped dicts for exposed legacy entities so they flow
+    through the same name/fallback resolution as registry entities
+    (:func:`_entity_name_candidates`): friendly_name first, then (there are
+    no legacy aliases -- Home Assistant has no alias concept for entities
+    outside the registry) the entity_id-derived fallback. ``area_id``/
+    ``device_id`` are always ``None`` -- legacy entities never contribute
+    Area combination terms, since they have no registry entry to look
+    either up from (never guessed, see module docstring).
+    """
+    return [
+        {
+            "entity_id": entity_id,
+            "name": _legacy_entity_friendly_name(entity_id, states),
+            "original_name": None,
+            "aliases": [],
+            "area_id": None,
+            "device_id": None,
+        }
+        for entity_id in entity_ids
+    ]
 
 
 def _area_terms(area: dict[str, Any]) -> list[str]:
@@ -597,6 +729,91 @@ async def _fetch_expose_new_default(ws: Any, command_id: int) -> bool:
     return True
 
 
+async def _fetch_explicitly_exposed_legacy_ids(
+    ws: Any, command_id: int, legacy_ids: set[str]
+) -> set[str]:
+    """Legacy entities with a cached ``should_expose: True`` for the
+    ``conversation`` assistant, via ``homeassistant/expose_entity/list``
+    (see module docstring: the only read-only signal for an explicit legacy
+    override). Restricted to ``legacy_ids`` -- this command also returns
+    registry entities, which this module deliberately ignores here since
+    they already have a strictly better source (their own cached
+    ``options``, read via ``config/entity_registry/list``).
+
+    Never raises: degrades to no explicit legacy overrides (falls through
+    to the default-exposure rule) if the command is unsupported or
+    unexpected.
+    """
+    if not legacy_ids:
+        return set()
+    try:
+        result = await _send_command_raw(ws, command_id, "homeassistant/expose_entity/list")
+    except RuntimeError:
+        return set()
+    if not isinstance(result, dict):
+        return set()
+    exposed_entities = result.get("exposed_entities")
+    if not isinstance(exposed_entities, dict):
+        return set()
+
+    exposed: set[str] = set()
+    for entity_id, assistants in exposed_entities.items():
+        if (
+            entity_id in legacy_ids
+            and isinstance(assistants, dict)
+            and assistants.get(CONVERSATION_ASSISTANT)
+        ):
+            exposed.add(entity_id)
+    return exposed
+
+
+async def _resolve_legacy_exposed_entities(
+    ws: Any,
+    command_id: "itertools.count[int]",
+    entities: list[dict[str, Any]],
+    states: list[dict[str, Any]],
+    expose_new_default: bool,
+) -> tuple[set[str], list[dict[str, Any]]]:
+    """Compute legacy (non-registry) entity exposure and their
+    pseudo-entity dicts (see module docstring). Returns (exposed_ids,
+    pseudo_entities); both empty if there are no legacy entities at all --
+    in that case ``homeassistant/expose_entity/list`` is never sent."""
+    legacy_ids = legacy_entity_ids(entities, states)
+    if not legacy_ids:
+        return set(), []
+
+    explicitly_exposed_legacy_ids = await _fetch_explicitly_exposed_legacy_ids(
+        ws, next(command_id), legacy_ids
+    )
+    exposed_ids = compute_legacy_exposed_entity_ids(
+        legacy_ids, states, expose_new_default, explicitly_exposed_legacy_ids
+    )
+    return exposed_ids, build_legacy_pseudo_entities(exposed_ids, states)
+
+
+async def _authenticate(ws: Any, token: str) -> None:
+    """Perform the Home Assistant WS auth handshake. Raises RuntimeError on
+    an unexpected handshake message or a rejected token."""
+    hello = json.loads(await ws.recv())
+    if hello.get("type") != "auth_required":
+        raise RuntimeError(f"Unexpected Home Assistant WS handshake: {hello.get('type')}")
+
+    await ws.send(json.dumps({"type": "auth", "access_token": token}))
+    auth_result = json.loads(await ws.recv())
+    if auth_result.get("type") != "auth_ok":
+        raise RuntimeError("Home Assistant WebSocket authentication failed")
+
+
+async def _fetch_optional_list(ws: Any, command_id: int, command_type: str) -> list[dict[str, Any]]:
+    """Fetch a list-returning command that may not exist on older Home
+    Assistant cores; degrades to an empty list rather than failing the
+    whole vocabulary fetch."""
+    try:
+        return await _send_command(ws, command_id, command_type)
+    except RuntimeError:
+        return []
+
+
 async def fetch_ha_vocabulary(
     token: str | None = None,
     ws_url: str = DEFAULT_WS_URL,
@@ -629,41 +846,39 @@ async def fetch_ha_vocabulary(
 
     try:
         async with websockets.connect(ws_url, open_timeout=CONNECT_TIMEOUT) as ws:
-            hello = json.loads(await ws.recv())
-            if hello.get("type") != "auth_required":
-                raise RuntimeError(f"Unexpected Home Assistant WS handshake: {hello.get('type')}")
-
-            await ws.send(json.dumps({"type": "auth", "access_token": token}))
-            auth_result = json.loads(await ws.recv())
-            if auth_result.get("type") != "auth_ok":
-                raise RuntimeError("Home Assistant WebSocket authentication failed")
+            await _authenticate(ws, token)
 
             command_id = itertools.count(1)
             areas = await _send_command(ws, next(command_id), "config/area_registry/list")
             devices = await _send_command(ws, next(command_id), "config/device_registry/list")
             entities = await _send_command(ws, next(command_id), "config/entity_registry/list")
-            try:
-                floors = await _send_command(ws, next(command_id), "config/floor_registry/list")
-            except RuntimeError:
-                # Floor registry is a newer HA feature; older cores may
-                # not support the command. Optional, not fatal.
-                floors = []
-            try:
-                states = await _send_command(ws, next(command_id), "get_states")
-            except RuntimeError:
-                # Needed only for binary_sensor/sensor default-exposure
-                # device_class checks; degrade gracefully if unavailable.
-                states = []
+            # Floor registry is a newer HA feature; older cores may not
+            # support it. get_states is needed only for binary_sensor/
+            # sensor default-exposure device_class checks. Both optional,
+            # not fatal.
+            floors = await _fetch_optional_list(ws, next(command_id), "config/floor_registry/list")
+            states = await _fetch_optional_list(ws, next(command_id), "get_states")
             expose_new_default = await _fetch_expose_new_default(ws, next(command_id))
 
-            exposed_entity_ids = compute_exposed_entity_ids(entities, states, expose_new_default)
+            registry_exposed_ids = compute_exposed_entity_ids(entities, states, expose_new_default)
+
+            legacy_exposed_ids, legacy_pseudo_entities = await _resolve_legacy_exposed_entities(
+                ws, command_id, entities, states, expose_new_default
+            )
+
+            exposed_entity_ids = registry_exposed_ids | legacy_exposed_ids
+            entities = entities + legacy_pseudo_entities
 
             # Aliases (config/entity_registry/list doesn't return them, see
             # module docstring) are fetched only for exposed entities --
-            # never the full registry -- in one bulk round trip.
-            aliases_by_entity_id = await _fetch_entity_aliases(
-                ws, next(command_id), sorted(exposed_entity_ids)
-            )
+            # never the full registry -- in one bulk round trip. Legacy
+            # entities have no alias concept, so this is restricted to
+            # registry-exposed entities only.
+            aliases_by_entity_id: dict[str, list[str]] = {}
+            if registry_exposed_ids:
+                aliases_by_entity_id = await _fetch_entity_aliases(
+                    ws, next(command_id), sorted(registry_exposed_ids)
+                )
             for entity in entities:
                 entity_id = entity.get("entity_id")
                 if entity_id in aliases_by_entity_id:

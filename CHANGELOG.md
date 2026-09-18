@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.2] - 2026-09-18
+
+Targeted quality/stability pass: legacy (non-registry) Home Assistant entities
+now contribute to the automatic STT vocabulary, Pocket TTS's default voice is
+validated (and optionally warmed up) at startup instead of lazily on first use,
+a mid-stream TTS failure can no longer send a duplicate `audio-start`, TTS
+performance logging now separates model compute time from lock-wait and
+Wyoming-send time, and both real e2e tests now fail loudly on an actual code/API
+regression instead of silently skipping. No new STT engine, no new TTS model, no
+architecture changes.
+
+See `homeintent-moonshine-stt/CHANGELOG.md` and `ABSCHLUSSBERICHT_V0.2.2.md` for full details.
+
 ## [0.2.1] - 2026-09-17
 
 Makes the automatic Moonshine STT vocabulary Assist-aware: only entities actually

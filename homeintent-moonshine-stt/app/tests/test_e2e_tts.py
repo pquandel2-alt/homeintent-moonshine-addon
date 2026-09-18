@@ -7,11 +7,16 @@ Marked ``e2e`` and excluded from the default test run (see pyproject.toml's
 -- slow, and not something a hermetic unit-test run should depend on. Run
 explicitly with ``pytest -m e2e``.
 
-If the network/model is unavailable, the test is skipped with a clear
-reason rather than reporting a fabricated pass or silently vanishing. Not
-run in the default CI push/PR pipeline (see .github/workflows/build.yml's
-``e2e-tts-synthesize`` job, ``workflow_dispatch``-gated) to avoid a real
-model download on every push -- see ABSCHLUSSBERICHT_V0.2.0.md.
+If the network/infrastructure is genuinely unavailable (DNS/connection
+failure, HTTP error reaching Hugging Face, ...), the test is skipped with a
+clear reason. Anything else -- a broken model load, an invalid parameter,
+a changed upstream API -- is a real regression in an officially supported
+path (Pocket TTS "german" model + "juergen" voice) and must FAIL, not be
+silently hidden behind a skip (see app/tests/e2e_infra.py and item 13 of
+the v0.2.2 quality/stability task). Not run in the default CI push/PR
+pipeline (see .github/workflows/build.yml's ``e2e-tts-synthesize`` job,
+``workflow_dispatch``-gated) to avoid a real model download on every push
+-- see ABSCHLUSSBERICHT_V0.2.0.md.
 """
 
 import asyncio
@@ -24,6 +29,7 @@ from wyoming.server import AsyncTcpServer
 from wyoming.tts import Synthesize
 
 from app.handler import MoonshineAsrHandler
+from app.tests.e2e_infra import is_infra_failure
 from app.tts import load_tts_model
 from app.tts_session import PocketTtsSynthesizer
 
@@ -88,7 +94,9 @@ async def test_german_text_round_trip_produces_valid_pcm(tmp_path: Path, sentenc
     try:
         pcm_bytes = await _run_synthesize_round_trip(sentence, cache_dir=tmp_path)
     except Exception as e:
-        pytest.skip(f"Pocket TTS model/voice unavailable ({type(e).__name__}: {e})")
+        if is_infra_failure(e):
+            pytest.skip(f"Pocket TTS model/voice unreachable ({type(e).__name__}: {e})")
+        raise  # a real regression in an officially supported path -- must fail, not skip
 
     assert len(pcm_bytes) > 0, "Expected non-empty synthesized audio"
     assert len(pcm_bytes) % 2 == 0, "16-bit PCM must have an even byte length"

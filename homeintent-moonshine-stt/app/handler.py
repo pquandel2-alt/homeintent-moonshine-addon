@@ -27,7 +27,7 @@ from app.debug_audio import DEFAULT_DEBUG_AUDIO_DIR, save_debug_audio
 from app.models import get_model_info
 from app.streaming import MoonshineStreamingSession
 from app.tts import get_tts_model_info
-from app.tts_session import TtsSynthesizer
+from app.tts_session import TtsSynthesisStats, TtsSynthesizer
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,12 +47,21 @@ _ATTRIBUTION_TTS_MODEL = Attribution(
 
 @dataclass
 class _SynthesisStats:
-    """Accumulator for one _handle_synthesize() call's performance data."""
+    """Accumulator for one _handle_synthesize() call's performance data.
+
+    ``wyoming_send_seconds`` is the cumulative time spent inside
+    write_event() for audio-start/audio-chunk events -- real socket I/O
+    (and any client backpressure), never Pocket TTS's own compute. Kept
+    strictly separate from ``tts_stats.model_generation_seconds`` (see
+    app/tts_session.py's TtsSynthesisStats) so a slow/backpressured client
+    can never be misread as slow model inference.
+    """
 
     audio_started: bool = False
     total_samples: int = 0
     first_chunk_generated_at: float | None = None
     first_chunk_sent_at: float | None = None
+    wyoming_send_seconds: float = 0.0
 
 
 class MoonshineAsrHandler(AsyncEventHandler):
@@ -393,8 +402,13 @@ class MoonshineAsrHandler(AsyncEventHandler):
                 _LOGGER.error("Failed to save debug audio: %s", err)
 
     async def _stream_synthesis_chunks(
-        self, text: str, voice_name: str | None, sample_rate: int
-    ) -> "_SynthesisStats":
+        self,
+        text: str,
+        voice_name: str | None,
+        sample_rate: int,
+        stats: "_SynthesisStats",
+        tts_stats: TtsSynthesisStats,
+    ) -> None:
         """Consume the TTS stream, forwarding audio-start/chunk as it goes.
 
         Split out of _handle_synthesize() to keep that method's own
@@ -402,27 +416,37 @@ class MoonshineAsrHandler(AsyncEventHandler):
         how to answer the client), always sends audio-start at most once,
         and always releases the underlying async generator via aclose(),
         including on early client disconnect (B26).
+
+        ``stats`` is mutated in place rather than returned: if synthesis
+        fails partway through, the exception propagates out of this
+        coroutine and a `return stats` would never run -- the caller needs
+        to know whether audio-start was already sent (``stats.audio_started``)
+        even in that case, so it never sends a second one (see
+        _handle_synthesize's except branch).
         """
-        stats = _SynthesisStats()
         assert self._tts_synthesizer is not None  # only called when TTS is enabled
 
-        agen = self._tts_synthesizer.synthesize_stream(text, voice_name)
+        agen = self._tts_synthesizer.synthesize_stream(text, voice_name, tts_stats)
         try:
             async for chunk in agen:
                 if stats.first_chunk_generated_at is None:
                     stats.first_chunk_generated_at = time.monotonic()
                 if not stats.audio_started:
+                    send_started = time.monotonic()
                     await self.write_event(
                         AudioStart(rate=sample_rate, width=2, channels=1).event()
                     )
+                    stats.wyoming_send_seconds += time.monotonic() - send_started
                     stats.audio_started = True
 
                 pcm = float32_to_pcm_int16(chunk)
                 if not pcm:
                     continue
+                send_started = time.monotonic()
                 await self.write_event(
                     AudioChunk(rate=sample_rate, width=2, channels=1, audio=pcm).event()
                 )
+                stats.wyoming_send_seconds += time.monotonic() - send_started
                 if stats.first_chunk_sent_at is None:
                     stats.first_chunk_sent_at = time.monotonic()
                 stats.total_samples += len(chunk)
@@ -432,8 +456,6 @@ class MoonshineAsrHandler(AsyncEventHandler):
             # mid-stream) -- always signals PocketTtsSynthesizer's producer
             # thread to stop and releases its lock (see app/tts_session.py).
             await agen.aclose()
-
-        return stats
 
     async def _handle_synthesize(self, event: Event) -> None:
         """Handle a Wyoming TTS request: text in, streamed audio-chunks out.
@@ -463,11 +485,18 @@ class MoonshineAsrHandler(AsyncEventHandler):
             return
 
         requested_at = time.monotonic()
+        stats = _SynthesisStats()
+        tts_stats = TtsSynthesisStats()
         try:
-            stats = await self._stream_synthesis_chunks(text, voice_name, sample_rate)
+            await self._stream_synthesis_chunks(text, voice_name, sample_rate, stats, tts_stats)
         except Exception as err:
             _LOGGER.error("TTS synthesis failed: %s", err, exc_info=True)
-            await self.write_event(AudioStart(rate=sample_rate, width=2, channels=1).event())
+            # Only one audio-start per synthesize request: _stream_synthesis
+            # _chunks() may have already sent it (and possibly some chunks)
+            # before failing mid-stream -- a second one here would be a
+            # protocol violation, not just a cosmetic duplicate.
+            if not stats.audio_started:
+                await self.write_event(AudioStart(rate=sample_rate, width=2, channels=1).event())
             await self.write_event(AudioStop().event())
             await self.write_event(
                 WyomingError(text="TTS synthesis failed", code="tts_synthesis_error").event()
@@ -482,26 +511,50 @@ class MoonshineAsrHandler(AsyncEventHandler):
         await self.write_event(AudioStop().event())
 
         if self._tts_log_performance:
-            self._log_tts_performance(text, sample_rate, requested_at, stats)
+            self._log_tts_performance(text, sample_rate, requested_at, stats, tts_stats)
 
     def _log_tts_performance(
-        self, text: str, sample_rate: int, requested_at: float, stats: "_SynthesisStats"
+        self,
+        text: str,
+        sample_rate: int,
+        requested_at: float,
+        stats: "_SynthesisStats",
+        tts_stats: TtsSynthesisStats,
     ) -> None:
-        synthesis_time = time.monotonic() - requested_at
+        """Log a compact timing breakdown, never the synthesized text.
+
+        Distinguishes real Pocket TTS model compute
+        (``tts_stats.model_generation_seconds``) from time this request
+        spent waiting for the shared TTS lock behind another request
+        (``tts_stats.lock_wait_seconds``) and from real Wyoming socket I/O/
+        client backpressure (``stats.wyoming_send_seconds``) -- none of
+        those must be misread as one another. ``model_rtf`` reflects only
+        the model's own compute; ``wall_rtf`` is the full, real
+        client-observed request cost including all of the above.
+        """
+        wall_time = time.monotonic() - requested_at
         audio_duration = stats.total_samples / sample_rate if sample_rate else 0.0
         ttfa_generated = (
             stats.first_chunk_generated_at - requested_at if stats.first_chunk_generated_at else 0.0
         )
         ttfa_sent = stats.first_chunk_sent_at - requested_at if stats.first_chunk_sent_at else 0.0
-        rtf = synthesis_time / audio_duration if audio_duration > 0 else 0.0
+        model_rtf = (
+            tts_stats.model_generation_seconds / audio_duration if audio_duration > 0 else 0.0
+        )
+        wall_rtf = wall_time / audio_duration if audio_duration > 0 else 0.0
         _LOGGER.info(
             "TTS completed: model=%s chars=%d ttfa_generated=%.3fs ttfa_sent=%.3fs "
-            "synthesis=%.2fs audio=%.2fs rtf=%.2f",
+            "lock_wait=%.3fs model_compute=%.2fs wyoming_send=%.3fs wall=%.2fs audio=%.2fs "
+            "model_rtf=%.2f wall_rtf=%.2f",
             self._tts_model_name,
             len(text),
             ttfa_generated,
             ttfa_sent,
-            synthesis_time,
+            tts_stats.lock_wait_seconds,
+            tts_stats.model_generation_seconds,
+            stats.wyoming_send_seconds,
+            wall_time,
             audio_duration,
-            rtf,
+            model_rtf,
+            wall_rtf,
         )

@@ -12,7 +12,7 @@ import time
 import numpy as np
 import pytest
 
-from app.tts_session import PocketTtsSynthesizer
+from app.tts_session import PocketTtsSynthesizer, TtsSynthesisStats
 
 
 class _FakeTensor:
@@ -184,6 +184,129 @@ class TestThreadSafetyDocumentation:
 
         assert all(lock_states), "lock must stay held for the whole streamed request"
         assert not synth._lock.locked(), "lock must be released once the request completes"
+
+
+class TestTtsSynthesisStats:
+    """Item 9-11: model compute time, lock-wait time, and consumer
+    (Wyoming-send/backpressure) time must be measured separately and never
+    conflated with one another."""
+
+    @pytest.mark.asyncio
+    async def test_model_generation_seconds_reflects_real_model_delay(self):
+        model = _FakeTtsModel()
+
+        def slow_generate(voice_state: object, text: str):
+            model.generate_calls.append((voice_state, text))
+            time.sleep(0.05)
+            yield _FakeTensor([0.1, 0.2])
+
+        model.generate_audio_stream = slow_generate  # type: ignore[method-assign]
+        synth = PocketTtsSynthesizer(model, default_voice="juergen")
+        stats = TtsSynthesisStats()
+
+        async for _ in synth.synthesize_stream("Text", stats=stats):
+            pass
+
+        assert stats.model_generation_seconds >= 0.04
+
+    @pytest.mark.asyncio
+    async def test_consumer_backpressure_not_counted_as_model_time(self):
+        """A slow *consumer* (simulating Wyoming write/client backpressure)
+        must never inflate model_generation_seconds -- only real time spent
+        inside generate_audio_stream() counts."""
+        model = _FakeTtsModel({"Text": [[0.1], [0.2], [0.3]]})
+        synth = PocketTtsSynthesizer(model, default_voice="juergen")
+        stats = TtsSynthesisStats()
+
+        async for _ in synth.synthesize_stream("Text", stats=stats):
+            await asyncio.sleep(0.05)  # simulates a slow/backpressured client
+
+        assert stats.model_generation_seconds < 0.03
+
+    @pytest.mark.asyncio
+    async def test_lock_wait_seconds_reflects_time_behind_another_request(self):
+        model = _FakeTtsModel({"A": [[0.1]] * 3, "B": [[0.2]]})
+        synth = PocketTtsSynthesizer(model, default_voice="juergen")
+        stats_b = TtsSynthesisStats()
+
+        async def hold_lock_with_slow_consumer() -> None:
+            async for _ in synth.synthesize_stream("A"):
+                await asyncio.sleep(0.03)
+
+        async def request_b() -> None:
+            await asyncio.sleep(0.01)  # let A acquire the lock first
+            async for _ in synth.synthesize_stream("B", stats=stats_b):
+                pass
+
+        await asyncio.gather(hold_lock_with_slow_consumer(), request_b())
+
+        assert stats_b.lock_wait_seconds > 0.0
+
+    @pytest.mark.asyncio
+    async def test_no_stats_argument_does_not_raise(self):
+        """stats is optional -- callers that don't need the breakdown must
+        not be forced to pass one."""
+        model = _FakeTtsModel()
+        synth = PocketTtsSynthesizer(model, default_voice="juergen")
+
+        async for _ in synth.synthesize_stream("Text"):
+            pass  # no exception
+
+
+class TestPreloadAndWarmup:
+    @pytest.mark.asyncio
+    async def test_preload_default_voice_caches_state(self):
+        model = _FakeTtsModel()
+        synth = PocketTtsSynthesizer(model, default_voice="juergen")
+
+        await synth.preload_default_voice()
+
+        assert model.get_state_calls == ["juergen"]
+        # A subsequent real request must not resolve it again.
+        async for _ in synth.synthesize_stream("Text"):
+            pass
+        assert model.get_state_calls == ["juergen"]
+
+    @pytest.mark.asyncio
+    async def test_preload_default_voice_propagates_invalid_voice_error(self):
+        model = _FakeTtsModel()
+
+        def _raise(_voice: str) -> dict[str, str]:
+            raise ValueError("unknown voice")
+
+        model.get_state_for_audio_prompt = _raise  # type: ignore[assignment]
+        synth = PocketTtsSynthesizer(model, default_voice="not-a-real-voice")
+
+        with pytest.raises(ValueError, match="unknown voice"):
+            await synth.preload_default_voice()
+
+    @pytest.mark.asyncio
+    async def test_warmup_discards_audio_and_returns_elapsed_time(self):
+        model = _FakeTtsModel({"Eins, zwei, drei.": [[0.1, 0.2], [0.3, 0.4]]})
+        synth = PocketTtsSynthesizer(model, default_voice="juergen")
+
+        elapsed = await synth.warmup()
+
+        assert elapsed >= 0.0
+        assert model.generate_calls  # the model was actually invoked
+
+    @pytest.mark.asyncio
+    async def test_warmup_uses_default_voice(self):
+        model = _FakeTtsModel()
+        synth = PocketTtsSynthesizer(model, default_voice="juergen")
+
+        await synth.warmup()
+
+        assert model.get_state_calls == ["juergen"]
+
+    @pytest.mark.asyncio
+    async def test_warmup_propagates_synthesis_error(self):
+        model = _FakeTtsModel()
+        model.raise_on_generate = RuntimeError("warmup boom")
+        synth = PocketTtsSynthesizer(model, default_voice="juergen")
+
+        with pytest.raises(RuntimeError, match="warmup boom"):
+            await synth.warmup()
 
 
 def test_real_time_elapsed_does_not_block_producer_unreasonably():

@@ -40,7 +40,7 @@ logging.basicConfig(
 )
 _LOGGER = logging.getLogger(__name__)
 
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -114,6 +114,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=True,
         help="Log a compact per-request TTFA/RTF line",
     )
+    parser.add_argument(
+        "--tts-warmup",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run one discarded synthesis at startup to avoid a slow first real request",
+    )
 
     return parser
 
@@ -145,6 +151,7 @@ def _load_json_config_overrides(args: argparse.Namespace) -> bool:
             "tts_model",
             "tts_voice",
             "tts_log_performance",
+            "tts_warmup",
         ):
             if key in config:
                 setattr(args, key.replace("-", "_"), config[key])
@@ -283,20 +290,39 @@ def _build_handler_factory(
 
 
 def _load_tts_synthesizer(args: argparse.Namespace) -> PocketTtsSynthesizer | None:
-    """Load the Pocket TTS model and wrap it for reuse. Returns None on failure.
+    """Load the Pocket TTS model, validate+cache the configured default
+    voice, and optionally warm it up. Returns None on failure.
 
-    A load failure here is treated as fatal (like a Moonshine load failure
-    in _load_and_bias_transcriber()) rather than silently falling back to
-    "no TTS": the user explicitly opted into tts_enabled, so failing loudly
-    at startup is more useful than a working add-on that silently never
-    answers synthesize requests.
+    A load or voice-resolution failure here is treated as fatal (like a
+    Moonshine load failure in _load_and_bias_transcriber()) rather than
+    silently falling back to "no TTS": the user explicitly opted into
+    tts_enabled with a specific tts_voice, so failing loudly at startup is
+    more useful than a working add-on that only discovers an invalid voice
+    name on its first real synthesize request. Warmup failure, in contrast,
+    is not fatal -- it is a pure performance optimization (see
+    PocketTtsSynthesizer.warmup()'s docstring), not a correctness signal.
     """
     try:
         tts_model = load_tts_model(model=args.tts_model)
     except Exception as e:
         _LOGGER.error(f"Failed to load Pocket TTS model: {e}")
         return None
-    return PocketTtsSynthesizer(tts_model, default_voice=args.tts_voice)
+
+    synthesizer = PocketTtsSynthesizer(tts_model, default_voice=args.tts_voice)
+    try:
+        asyncio.run(synthesizer.preload_default_voice())
+    except Exception as e:
+        _LOGGER.error(f"Failed to resolve TTS voice '{args.tts_voice}': {e}")
+        return None
+
+    if args.tts_warmup:
+        try:
+            elapsed = asyncio.run(synthesizer.warmup())
+            _LOGGER.info("Pocket TTS warmup completed in %.2fs", elapsed)
+        except Exception as e:
+            _LOGGER.warning("Pocket TTS warmup failed (continuing without it): %s", e)
+
+    return synthesizer
 
 
 def _load_and_bias_transcriber(

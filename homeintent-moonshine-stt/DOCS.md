@@ -41,9 +41,15 @@ over one Wyoming service.
 - **tts_model**: `german` (6 transformer layers, faster, default) or `german_24l`
   (24 layers, higher quality, slower).
 - **tts_voice** (default `juergen`): the German preset voice. `juergen` is the only
-  real German preset Pocket TTS ships.
-- **tts_log_performance** (default `true`): logs a compact TTFA/synthesis-time/RTF
-  line per request. Never logs the synthesized text.
+  real German preset Pocket TTS ships. Validated (and cached) once at add-on
+  startup -- an invalid voice name fails startup immediately with a clear error,
+  instead of only on the first real synthesize request.
+- **tts_warmup** (default `true`): runs one discarded synthesis at startup so the
+  first real request isn't slower than later ones. Pure performance optimization
+  (a failure here is logged but never fails startup).
+- **tts_log_performance** (default `true`): logs a compact per-request timing
+  breakdown (time-to-first-audio, lock-wait, model compute, Wyoming-send, wall
+  time, model RTF, wall RTF). Never logs the synthesized text.
 
 ### Recognition tuning (STT keyterms and vocabulary)
 
@@ -54,7 +60,10 @@ over one Wyoming service.
   combinations (e.g. `cover.wohnzimmer_rolllade` with alias "Rollo" in area
   "Wohnzimmer" → `Rolllade`, `Rollo`, `Wohnzimmer Rolllade`, `Wohnzimmer Rollo`).
   Entities not exposed to Assist (e.g. an unexposed `sensor.router_cpu_temperature`)
-  contribute nothing. Newly exposed entities are picked up at the next refresh;
+  contribute nothing. Entities with no Home Assistant entity registry entry at all
+  ("legacy" entities) are also covered, using their live friendly name -- but never
+  contribute Area combination terms, since they have no registry entry to resolve
+  an area from. Newly exposed entities are picked up at the next refresh;
   removing an exposure makes its terms disappear after the next successful refresh.
   Effective exposure is computed the same way Home Assistant Core itself does (an
   explicit override always wins, otherwise Core's own default-exposure rule).

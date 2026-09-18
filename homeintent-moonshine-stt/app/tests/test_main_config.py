@@ -115,6 +115,10 @@ class TestLoadEngines:
         args = _parse(["--no-stt-enabled", "--tts-enabled"])
         with patch("app.__main__.load_tts_model") as mock_load_tts:
             mock_load_tts.return_value = MagicMock(has_voice_cloning=True, sample_rate=24000)
+            # Warmup (item 8) actually consumes generate_audio_stream()'s
+            # result via a real for-loop -- a bare MagicMock() would iterate
+            # forever (its __next__ never raises StopIteration).
+            mock_load_tts.return_value.generate_audio_stream.return_value = iter([])
             engines = _load_engines(args)
 
         assert engines is not None
@@ -130,6 +134,7 @@ class TestLoadEngines:
         ):
             mock_load_stt.return_value = MagicMock()
             mock_load_tts.return_value = MagicMock(has_voice_cloning=True, sample_rate=24000)
+            mock_load_tts.return_value.generate_audio_stream.return_value = iter([])
             engines = _load_engines(args)
 
         assert engines is not None
@@ -147,3 +152,67 @@ class TestLoadEngines:
 
         engines = _load_engines(args)  # real load_tts_model() call, not mocked
         assert engines is None
+
+
+class TestTtsVoiceValidationAndWarmup:
+    """Item 7/8: the configured default TTS voice must be resolved (and
+    optionally warmed up) once at startup, not lazily on the first real
+    synthesize request -- see app/__main__.py's _load_tts_synthesizer()."""
+
+    def _args_with_mock_model(self, mock_load_tts: MagicMock, extra_argv: list[str] | None = None):
+        args = _parse(["--no-stt-enabled", "--tts-enabled", *(extra_argv or [])])
+        mock_load_tts.return_value = MagicMock(has_voice_cloning=True, sample_rate=24000)
+        mock_load_tts.return_value.generate_audio_stream.return_value = iter([])
+        return args
+
+    def test_invalid_voice_fails_startup_not_first_request(self):
+        """get_state_for_audio_prompt() raising (invalid voice name) must
+        fail _load_engines() at startup, before any Wyoming connection."""
+        with patch("app.__main__.load_tts_model") as mock_load_tts:
+            args = self._args_with_mock_model(mock_load_tts, ["--tts-voice", "not-a-real-voice"])
+            mock_load_tts.return_value.get_state_for_audio_prompt.side_effect = ValueError(
+                "unknown voice"
+            )
+            engines = _load_engines(args)
+
+        assert engines is None
+
+    def test_valid_voice_resolved_and_cached_at_startup(self):
+        with patch("app.__main__.load_tts_model") as mock_load_tts:
+            args = self._args_with_mock_model(mock_load_tts)
+            engines = _load_engines(args)
+
+        assert engines is not None
+        assert engines.tts_synthesizer is not None
+        # Cached during startup preload -- a real synthesize request must
+        # not call get_state_for_audio_prompt() again for the same voice.
+        assert mock_load_tts.return_value.get_state_for_audio_prompt.call_count == 1
+
+    def test_warmup_runs_by_default(self):
+        with patch("app.__main__.load_tts_model") as mock_load_tts:
+            args = self._args_with_mock_model(mock_load_tts)
+            engines = _load_engines(args)
+
+        assert engines is not None
+        mock_load_tts.return_value.generate_audio_stream.assert_called_once()
+
+    def test_warmup_disabled_skips_generate_call(self):
+        with patch("app.__main__.load_tts_model") as mock_load_tts:
+            args = self._args_with_mock_model(mock_load_tts, ["--no-tts-warmup"])
+            engines = _load_engines(args)
+
+        assert engines is not None
+        mock_load_tts.return_value.generate_audio_stream.assert_not_called()
+
+    def test_warmup_failure_is_not_fatal(self):
+        """Warmup is a pure optimization -- a failure there must not take
+        down an otherwise successfully validated TTS engine."""
+        with patch("app.__main__.load_tts_model") as mock_load_tts:
+            args = self._args_with_mock_model(mock_load_tts)
+            mock_load_tts.return_value.generate_audio_stream.side_effect = RuntimeError(
+                "warmup boom"
+            )
+            engines = _load_engines(args)
+
+        assert engines is not None
+        assert engines.tts_synthesizer is not None

@@ -29,13 +29,19 @@ class _FakeSynthesizer:
         self._chunks = chunks if chunks is not None else [[0.1, 0.2], [0.3, 0.4]]
         self.requested_voices: list[str | None] = []
         self.raise_error: BaseException | None = None
+        # If set, raise_error is raised only after this many chunks have
+        # already been yielded (0 = before any chunk, i.e. the previous
+        # behavior) -- lets tests simulate a mid-stream failure.
+        self.raise_after_chunks = 0
 
-    async def synthesize_stream(self, text: str, voice: str | None = None):
+    async def synthesize_stream(self, text: str, voice: str | None = None, stats=None):
         self.requested_voices.append(voice)
-        if self.raise_error is not None:
+        if self.raise_error is not None and self.raise_after_chunks == 0:
             raise self.raise_error
-        for chunk in self._chunks:
+        for i, chunk in enumerate(self._chunks, start=1):
             yield np.array(chunk, dtype=np.float32)
+            if self.raise_error is not None and i == self.raise_after_chunks:
+                raise self.raise_error
 
 
 class _CollectingWriter:
@@ -278,3 +284,155 @@ class TestHandleSynthesize:
         assert "ttfa_generated=" in perf_lines[0]
         assert "ttfa_sent=" in perf_lines[0]
         assert "rtf=" in perf_lines[0]
+
+    async def test_performance_log_reports_separate_timing_breakdown(
+        self, mock_reader, collecting_writer, caplog
+    ):
+        """Item 9-11: model compute, lock-wait, and Wyoming-send time must
+        each appear as their own field, distinct from the overall wall
+        time/RTF -- not folded into one opaque "synthesis" number."""
+        synth = _FakeSynthesizer(chunks=[[0.1, 0.2], [0.3, 0.4]])
+        handler = MoonshineAsrHandler(
+            reader=mock_reader,
+            writer=collecting_writer,
+            transcriber=None,
+            tts_synthesizer=synth,
+            tts_log_performance=True,
+        )
+        with caplog.at_level("INFO"):
+            await handler.handle_event(Synthesize(text="Hallo Welt").event())
+
+        perf_lines = [r.message for r in caplog.records if "TTS completed" in r.message]
+        assert len(perf_lines) == 1
+        line = perf_lines[0]
+        for field in (
+            "lock_wait=",
+            "model_compute=",
+            "wyoming_send=",
+            "wall=",
+            "audio=",
+            "model_rtf=",
+            "wall_rtf=",
+        ):
+            assert field in line, f"missing {field!r} in: {line}"
+
+
+@pytest.mark.asyncio
+class TestSynthesizeAudioStartStateMachine:
+    """A mid-stream Pocket TTS failure must never cause a second audio-start
+    within the same synthesize request -- see app/handler.py's
+    _stream_synthesis_chunks()/_handle_synthesize() docstrings. Exactly one
+    audio-start per request, whatever else happens."""
+
+    async def test_error_before_first_chunk_sends_single_audio_start_then_stop_and_error(
+        self, mock_reader, collecting_writer
+    ):
+        synth = _FakeSynthesizer()
+        synth.raise_error = RuntimeError("boom before any audio")
+        handler = MoonshineAsrHandler(
+            reader=mock_reader, writer=collecting_writer, transcriber=None, tts_synthesizer=synth
+        )
+        await handler.handle_event(Synthesize(text="Hallo").event())
+
+        events = await _read_all_events(collecting_writer)
+        types = [e.type for e in events]
+        assert types.count("audio-start") == 1
+        assert types == ["audio-start", "audio-stop", "error"]
+
+    async def test_error_after_audio_start_does_not_resend_audio_start(
+        self, mock_reader, collecting_writer
+    ):
+        """Failure occurs after the first chunk (and therefore after
+        audio-start was already sent) -- the except branch must not send a
+        second one."""
+        synth = _FakeSynthesizer(chunks=[[0.1, 0.2]])
+        synth.raise_error = RuntimeError("boom after first chunk")
+        synth.raise_after_chunks = 1
+        handler = MoonshineAsrHandler(
+            reader=mock_reader, writer=collecting_writer, transcriber=None, tts_synthesizer=synth
+        )
+        await handler.handle_event(Synthesize(text="Hallo").event())
+
+        events = await _read_all_events(collecting_writer)
+        types = [e.type for e in events]
+        assert types.count("audio-start") == 1
+        assert types == ["audio-start", "audio-chunk", "audio-stop", "error"]
+
+    async def test_error_after_multiple_chunks_still_sends_only_one_audio_start(
+        self, mock_reader, collecting_writer
+    ):
+        synth = _FakeSynthesizer(chunks=[[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]])
+        synth.raise_error = RuntimeError("boom after third chunk")
+        synth.raise_after_chunks = 3
+        handler = MoonshineAsrHandler(
+            reader=mock_reader, writer=collecting_writer, transcriber=None, tts_synthesizer=synth
+        )
+        await handler.handle_event(Synthesize(text="Hallo Welt").event())
+
+        events = await _read_all_events(collecting_writer)
+        types = [e.type for e in events]
+        assert types.count("audio-start") == 1
+        assert types == [
+            "audio-start",
+            "audio-chunk",
+            "audio-chunk",
+            "audio-chunk",
+            "audio-stop",
+            "error",
+        ]
+
+    async def test_normal_successful_stream_sends_exactly_one_audio_start(
+        self, mock_reader, collecting_writer
+    ):
+        synth = _FakeSynthesizer(chunks=[[0.1, 0.2], [0.3, 0.4]])
+        handler = MoonshineAsrHandler(
+            reader=mock_reader, writer=collecting_writer, transcriber=None, tts_synthesizer=synth
+        )
+        await handler.handle_event(Synthesize(text="Hallo Welt").event())
+
+        events = await _read_all_events(collecting_writer)
+        types = [e.type for e in events]
+        assert types.count("audio-start") == 1
+        assert "error" not in types
+
+    async def test_empty_text_sends_exactly_one_audio_start(self, mock_reader, collecting_writer):
+        synth = _FakeSynthesizer()
+        handler = MoonshineAsrHandler(
+            reader=mock_reader, writer=collecting_writer, transcriber=None, tts_synthesizer=synth
+        )
+        await handler.handle_event(Synthesize(text="").event())
+
+        events = await _read_all_events(collecting_writer)
+        types = [e.type for e in events]
+        assert types.count("audio-start") == 1
+        assert types == ["audio-start", "audio-stop"]
+
+    async def test_client_disconnect_mid_stream_sends_at_most_one_audio_start(
+        self, mock_reader, collecting_writer
+    ):
+        """Simulates a client disconnect mid-stream: the write_event() call
+        for a later chunk fails, propagating out of _stream_synthesis_chunks
+        via its finally/aclose() path -- must not double-send audio-start
+        either, matching the mid-stream-failure cases above."""
+        synth = _FakeSynthesizer(chunks=[[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]])
+        handler = MoonshineAsrHandler(
+            reader=mock_reader, writer=collecting_writer, transcriber=None, tts_synthesizer=synth
+        )
+
+        original_write_event = handler.write_event
+        call_count = 0
+
+        async def flaky_write_event(event):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 3:  # audio-start, then 1st audio-chunk, then fail on the 2nd
+                raise ConnectionResetError("client disconnected")
+            await original_write_event(event)
+
+        handler.write_event = flaky_write_event  # type: ignore[method-assign]
+
+        await handler.handle_event(Synthesize(text="Hallo Welt").event())
+
+        events = await _read_all_events(collecting_writer)
+        types = [e.type for e in events]
+        assert types.count("audio-start") <= 1

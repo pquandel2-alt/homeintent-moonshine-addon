@@ -59,6 +59,7 @@ TTS_ENABLED=$(config_bool_or_default 'tts_enabled' 'false')
 TTS_MODEL=$(config_or_default 'tts_model' 'german')
 TTS_VOICE=$(config_or_default 'tts_voice' 'juergen')
 TTS_LOG_PERFORMANCE=$(config_bool_or_default 'tts_log_performance' 'true')
+TTS_WARMUP=$(config_bool_or_default 'tts_warmup' 'true')
 
 # EXTRA_KEYTERMS is a free-text field; "null" is a legitimate (if unlikely)
 # keyterm-list entry only if a user literally typed it, but an *absent*
@@ -113,6 +114,12 @@ if bashio::var.true "${TTS_LOG_PERFORMANCE}"; then
     FLAGS+=("--tts-log-performance")
 else
     FLAGS+=("--no-tts-log-performance")
+fi
+
+if bashio::var.true "${TTS_WARMUP}"; then
+    FLAGS+=("--tts-warmup")
+else
+    FLAGS+=("--no-tts-warmup")
 fi
 
 if [ "${LOG_LEVEL}" = "DEBUG" ]; then

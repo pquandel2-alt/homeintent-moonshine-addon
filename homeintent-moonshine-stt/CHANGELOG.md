@@ -1,5 +1,59 @@
 # Changelog - HomeIntent Moonshine Voice Add-on
 
+## [0.2.2] - 2026-09-18
+
+Targeted quality/stability pass on top of v0.2.1's Assist-aware vocabulary: no
+new STT engine, no new TTS model, no architecture changes. See
+`ABSCHLUSSBERICHT_V0.2.2.md` for the full verification report.
+
+### Added
+- **Legacy (non-registry) entities now contribute to the HA vocabulary**
+  (`app/ha_vocabulary.py`): entities with no Home Assistant entity registry
+  entry at all (state-machine-only) are identified from `get_states` minus
+  `config/entity_registry/list`, and their effective Assist exposure is
+  computed the same way Home Assistant Core's own
+  `_async_should_expose_legacy_entity()` does -- reimplemented and verified
+  against the real `home-assistant/core` `dev` branch source. An explicit
+  override is read (read-only) via `homeassistant/expose_entity/list`, the
+  only WS surface that reaches into legacy exposure settings at all; falling
+  back to the same default-exposure rule as registry entities otherwise.
+  Legacy entities use their live state's `attributes.friendly_name` (with
+  the same entity-id fallback as registry entities) and never contribute
+  Area combination terms, since they have no registry entry to resolve an
+  area from.
+- **`tts_warmup`** (default `true`): runs one discarded synthesis at startup
+  so the first real TTS request isn't slower than later ones (general
+  PyTorch-on-CPU first-forward-pass cost, not a Pocket-TTS-specific JIT
+  effect -- verified against upstream source, no `torch.compile`/`torch.jit`
+  call sites exist in its model path).
+- **TTS voice validated at startup**: the configured `tts_voice` is now
+  resolved (`get_state_for_audio_prompt()`) and cached once during add-on
+  startup rather than lazily on the first real synthesize request. An
+  invalid voice name now fails the add-on at startup with a clear error
+  message instead of surfacing only when a user first tries to use it.
+- **Detailed TTS performance breakdown** (`tts_log_performance`): the
+  per-request log line now separately reports `lock_wait`, `model_compute`,
+  `wyoming_send`, `wall`, `model_rtf`, and `wall_rtf`, instead of one opaque
+  `synthesis`/`rtf` figure that could include lock-wait time or client
+  backpressure. `model_rtf` reflects only Pocket TTS's own real compute
+  time; `wall_rtf` is the full, real client-observed request cost.
+
+### Fixed
+- **Pocket TTS could send two `audio-start` events for one synthesize
+  request**: if synthesis failed after already sending `audio-start` (and
+  possibly some `audio-chunk`s), the error handler unconditionally sent a
+  second `audio-start` before `audio-stop`/the error event -- a Wyoming
+  protocol violation. Now tracked with an explicit per-request state: at
+  most one `audio-start` per request, in every failure path (before the
+  first chunk, mid-stream, or on a client disconnect).
+- **Real GitHub Actions CI failure for the published Pocket TTS e2e test**:
+  a bare `except Exception: pytest.skip(...)` around the real model
+  download/round-trip would have silently hidden a genuine code or upstream
+  API regression as a "skip" rather than failing the build. Both real e2e
+  test files now distinguish an actual network/infrastructure failure
+  (connection/timeout/DNS/proxy errors) from anything else, which is left
+  to fail loudly.
+
 ## [0.2.1] - 2026-09-17
 
 Makes the automatic Moonshine STT vocabulary Assist-aware: it now reflects the
