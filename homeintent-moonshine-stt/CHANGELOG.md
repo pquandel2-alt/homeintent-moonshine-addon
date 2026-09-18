@@ -13,9 +13,17 @@ architecture changes. See `ABSCHLUSSBERICHT_V0.2.3.md` for the full report.
   "Schalte das Licht im Wohnzimmer ein." -- an unnecessary source of flakiness,
   since the test's real purpose is to verify Moonshine, not Piper. It now uses
   a fixed, committed, deterministic audio fixture (`app/tests/fixtures/
-  schalte_licht_wohnzimmer.wav`, MIT/CC0-licensed Piper `thorsten-medium`
+  schalte_lampe_wohnzimmer.wav`, MIT/CC0-licensed Piper `thorsten-medium`
   voice output -- see `app/tests/fixtures/README.md` for full provenance) and
   no longer runs any TTS at all; Pocket TTS keeps its own separate e2e test.
+  The fixture's own generation is also empirically self-verifying now: while
+  preparing it, "Licht" turned out to be systematically misheard by Moonshine
+  with this Piper voice across several real CI runs (differently each time,
+  but reproducibly within one run), so the sentence was changed to "Schalte
+  die Lampe im Wohnzimmer ein." and the generator script
+  (`scripts/generate_stt_fixture.py`) now only accepts a candidate recording
+  that a real Moonshine transcription round trip actually recognizes
+  correctly, instead of trusting a single synthesis call to be usable.
 - **Corrected an over-eager legacy/non-registry Home Assistant Assist exposure
   fallback.** Re-verified against the current home-assistant/core source: no
   read-only API can tell an explicit "hidden from Assist" apart from "never
