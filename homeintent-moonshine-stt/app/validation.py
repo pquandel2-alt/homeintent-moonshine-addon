@@ -23,6 +23,9 @@ DEBUG_AUDIO_MAX_FILES_MAX = 10000
 HA_VOCABULARY_REFRESH_MINUTES_MIN = 0  # 0 disables periodic refresh
 HA_VOCABULARY_REFRESH_MINUTES_MAX = 1440
 
+TTS_THREADS_MIN = 0  # 0 = auto (PyTorch's own default, untouched)
+TTS_THREADS_MAX = 64  # generous upper bound; no real CPU has more cores
+
 
 def validate_transcription_interval(value: float) -> float:
     if not (TRANSCRIPTION_INTERVAL_MIN <= value <= TRANSCRIPTION_INTERVAL_MAX):
@@ -66,5 +69,13 @@ def validate_ha_vocabulary_refresh_minutes(value: int) -> int:
             f"ha_vocabulary_refresh_minutes must be between "
             f"{HA_VOCABULARY_REFRESH_MINUTES_MIN} and {HA_VOCABULARY_REFRESH_MINUTES_MAX}, "
             f"got {value}"
+        )
+    return value
+
+
+def validate_tts_threads(value: int) -> int:
+    if not (TTS_THREADS_MIN <= value <= TTS_THREADS_MAX):
+        raise ValueError(
+            f"tts_threads must be between {TTS_THREADS_MIN} and {TTS_THREADS_MAX}, got {value}"
         )
     return value

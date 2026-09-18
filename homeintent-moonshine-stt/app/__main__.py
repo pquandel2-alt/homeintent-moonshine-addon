@@ -29,6 +29,7 @@ from app.validation import (
     validate_ha_vocabulary_refresh_minutes,
     validate_keyterm_boost,
     validate_transcription_interval,
+    validate_tts_threads,
     validate_vad_threshold,
 )
 
@@ -120,6 +121,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=True,
         help="Run one discarded synthesis at startup to avoid a slow first real request",
     )
+    parser.add_argument(
+        "--tts-threads",
+        type=int,
+        default=0,
+        help="torch intra-op CPU threads for Pocket TTS (0 = PyTorch's own default)",
+    )
 
     return parser
 
@@ -152,6 +159,7 @@ def _load_json_config_overrides(args: argparse.Namespace) -> bool:
             "tts_voice",
             "tts_log_performance",
             "tts_warmup",
+            "tts_threads",
         ):
             if key in config:
                 setattr(args, key.replace("-", "_"), config[key])
@@ -219,6 +227,7 @@ def _validate_args(args: argparse.Namespace) -> bool:
         validate_keyterm_boost(args.keyterm_boost)
         validate_debug_audio_max_files(args.debug_audio_max_files)
         validate_ha_vocabulary_refresh_minutes(args.ha_vocabulary_refresh_minutes)
+        validate_tts_threads(args.tts_threads)
     except ValueError as e:
         _LOGGER.error(f"Invalid configuration: {e}")
         return False
@@ -264,6 +273,10 @@ def _log_startup_banner(
     _LOGGER.info("TTS: enabled=%s", args.tts_enabled)
     if args.tts_enabled:
         _LOGGER.info("TTS: engine=Pocket TTS model=%s voice=%s", args.tts_model, args.tts_voice)
+        _LOGGER.info(
+            "TTS: threads=%s",
+            "auto (PyTorch default)" if args.tts_threads == 0 else str(args.tts_threads),
+        )
 
 
 def _build_handler_factory(
@@ -303,7 +316,7 @@ def _load_tts_synthesizer(args: argparse.Namespace) -> PocketTtsSynthesizer | No
     PocketTtsSynthesizer.warmup()'s docstring), not a correctness signal.
     """
     try:
-        tts_model = load_tts_model(model=args.tts_model)
+        tts_model = load_tts_model(model=args.tts_model, num_threads=args.tts_threads)
     except Exception as e:
         _LOGGER.error(f"Failed to load Pocket TTS model: {e}")
         return None

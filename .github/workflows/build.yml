@@ -132,7 +132,7 @@ jobs:
             -v "${GITHUB_WORKSPACE}/.github/ci/fake_supervisor.py:/fake_supervisor.py:ro" \
             -v "${GITHUB_WORKSPACE}/homeintent-moonshine-stt/config.yaml:/config.yaml:ro" \
             -e CI_MODEL=tiny \
-            -e CI_OMIT_OPTIONS="log_performance,use_ha_vocabulary,ha_vocabulary_refresh_minutes,transcription_interval,decode_incomplete_lines,save_debug_audio,debug_audio_max_files,stt_enabled,tts_enabled,tts_model,tts_voice,tts_log_performance,tts_warmup" \
+            -e CI_OMIT_OPTIONS="log_performance,use_ha_vocabulary,ha_vocabulary_refresh_minutes,transcription_interval,decode_incomplete_lines,save_debug_audio,debug_audio_max_files,stt_enabled,tts_enabled,tts_model,tts_voice,tts_log_performance,tts_warmup,tts_threads" \
             -e CI_NULL_OPTIONS="keyterm_boost,vad_threshold" \
             python:3.11-slim python3 /fake_supervisor.py
 

@@ -7,6 +7,7 @@ from app.validation import (
     validate_ha_vocabulary_refresh_minutes,
     validate_keyterm_boost,
     validate_transcription_interval,
+    validate_tts_threads,
     validate_vad_threshold,
 )
 
@@ -99,3 +100,19 @@ class TestValidateHaVocabularyRefreshMinutes:
     def test_negative_rejected(self):
         with pytest.raises(ValueError, match="ha_vocabulary_refresh_minutes"):
             validate_ha_vocabulary_refresh_minutes(-1)
+
+
+class TestValidateTtsThreads:
+    def test_zero_means_auto_and_is_valid(self):
+        assert validate_tts_threads(0) == 0
+
+    def test_positive_value_accepted(self):
+        assert validate_tts_threads(4) == 4
+
+    def test_above_maximum_rejected(self):
+        with pytest.raises(ValueError, match="tts_threads"):
+            validate_tts_threads(65)
+
+    def test_negative_rejected(self):
+        with pytest.raises(ValueError, match="tts_threads"):
+            validate_tts_threads(-1)

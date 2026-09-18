@@ -89,6 +89,14 @@ class MoonshineStreamingSession:
         # long the user was talking, not by how long the model took).
         self._add_audio_time_seconds = 0.0
         self.finalize_time_seconds = 0.0
+        # Per-chunk breakdown (v0.2.4): a real production install showed
+        # audio=4.6s but inference=7+s (RTF > 1) -- these let a performance
+        # log line show WHERE that time went: is compute spread evenly
+        # across chunks (the model is just slower than real-time on this
+        # CPU), or is one or a few chunks pathologically slow (a backlog/
+        # stall, not a steady-state throughput problem)?
+        self._add_audio_chunk_count = 0
+        self._add_audio_compute_max_seconds = 0.0
 
     @property
     def inference_time_seconds(self) -> float:
@@ -101,6 +109,33 @@ class MoonshineStreamingSession:
         """
         return self._add_audio_time_seconds + self.finalize_time_seconds
 
+    @property
+    def add_audio_chunk_count(self) -> int:
+        """Number of add_audio() calls (Wyoming AudioChunk events) received."""
+        return self._add_audio_chunk_count
+
+    @property
+    def add_audio_compute_total_seconds(self) -> float:
+        """Cumulative native compute time across all add_audio() calls
+        (excludes finalize/stop) -- if this alone exceeds
+        ``audio_duration_seconds``, the model is processing slower than
+        real-time on this CPU (a genuine throughput problem), independent
+        of any single slow chunk."""
+        return self._add_audio_time_seconds
+
+    @property
+    def add_audio_compute_max_seconds(self) -> float:
+        """The single slowest add_audio() call's compute time -- a value
+        much larger than the average points at a stall/backlog rather than
+        uniformly-slow-but-steady processing."""
+        return self._add_audio_compute_max_seconds
+
+    @property
+    def average_chunk_compute_seconds(self) -> float:
+        if self._add_audio_chunk_count == 0:
+            return 0.0
+        return self._add_audio_time_seconds / self._add_audio_chunk_count
+
     async def start(self) -> None:
         """Start the underlying stream."""
         async with self._lock:
@@ -111,7 +146,11 @@ class MoonshineStreamingSession:
         async with self._lock:
             started = time.monotonic()
             await asyncio.to_thread(self._stream.add_audio, samples, sample_rate)
-            self._add_audio_time_seconds += time.monotonic() - started
+            elapsed = time.monotonic() - started
+            self._add_audio_time_seconds += elapsed
+            self._add_audio_chunk_count += 1
+            if elapsed > self._add_audio_compute_max_seconds:
+                self._add_audio_compute_max_seconds = elapsed
         self.audio_duration_seconds += len(samples) / sample_rate
 
     async def finalize(self) -> str:

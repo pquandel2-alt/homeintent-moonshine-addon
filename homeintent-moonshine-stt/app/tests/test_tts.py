@@ -89,3 +89,35 @@ class TestLoadTtsModel:
             )
             model = load_tts_model(model="german", cache_dir=tmp_path)
         assert model.has_voice_cloning is False
+
+    def test_zero_threads_does_not_touch_torch(self, tmp_path: Path):
+        """0 (the default) means "leave PyTorch's own default alone" --
+        torch.set_num_threads() must not be called at all."""
+        with (
+            patch("app.tts.TTSModel") as mock_tts_model_cls,
+            patch("torch.set_num_threads") as mock_set_threads,
+        ):
+            mock_tts_model_cls.load_model.return_value = MagicMock(
+                has_voice_cloning=True, sample_rate=24000
+            )
+            load_tts_model(model="german", cache_dir=tmp_path, num_threads=0)
+        mock_set_threads.assert_not_called()
+
+    def test_positive_threads_calls_torch_set_num_threads(self, tmp_path: Path):
+        """The real, documented torch.set_num_threads() API must be called
+        with the configured value, and before the model itself loads (so
+        it reliably takes effect -- see torch's own docs)."""
+        call_order: list[str] = []
+        with (
+            patch("app.tts.TTSModel") as mock_tts_model_cls,
+            patch("torch.set_num_threads") as mock_set_threads,
+        ):
+            mock_set_threads.side_effect = lambda n: call_order.append("set_threads")
+            mock_tts_model_cls.load_model.side_effect = lambda **kw: (
+                call_order.append("load_model"),
+                MagicMock(has_voice_cloning=True, sample_rate=24000),
+            )[1]
+            load_tts_model(model="german", cache_dir=tmp_path, num_threads=4)
+
+        mock_set_threads.assert_called_once_with(4)
+        assert call_order == ["set_threads", "load_model"]

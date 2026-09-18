@@ -119,6 +119,7 @@ def get_tts_model_info(model: str) -> dict[str, str]:
 def load_tts_model(
     model: str = GermanTtsModel.GERMAN.value,
     cache_dir: Path | None = None,
+    num_threads: int = 0,
 ) -> TTSModel:
     """Resolve, download (if needed), and load a Pocket TTS model.
 
@@ -132,6 +133,15 @@ def load_tts_model(
             tests). Sets HF_HOME so huggingface_hub's own hf_hub_download
             (used internally by pocket_tts for every ``hf://`` weight/voice
             path) caches there instead of its default location.
+        num_threads: If > 0, calls the real, documented
+            ``torch.set_num_threads()`` (intra-op CPU parallelism) before
+            loading the model, overriding PyTorch's own default (usually
+            the number of physical CPU cores). 0 (default) leaves PyTorch's
+            default untouched. Must be called before any eager/JIT/autograd
+            work runs to reliably take effect -- done here, before
+            ``TTSModel.load_model()``. Real per-thread-count benchmarking is
+            the caller's responsibility (see app/benchmark.py); this
+            function only wires the setting through.
 
     Returns:
         A loaded TTSModel ready for get_state_for_audio_prompt()/
@@ -146,6 +156,12 @@ def load_tts_model(
             f"Invalid TTS model: {model}. Must be one of: "
             f"{', '.join(m.value for m in GermanTtsModel)}"
         )
+
+    if num_threads > 0:
+        import torch
+
+        torch.set_num_threads(num_threads)
+        _LOGGER.info("Pocket TTS: torch intra-op threads set to %d", num_threads)
 
     resolved_cache_dir = cache_dir if cache_dir is not None else DEFAULT_TTS_CACHE_DIR
     resolved_cache_dir.mkdir(parents=True, exist_ok=True)

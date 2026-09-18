@@ -60,6 +60,7 @@ TTS_MODEL=$(config_or_default 'tts_model' 'german')
 TTS_VOICE=$(config_or_default 'tts_voice' 'juergen')
 TTS_LOG_PERFORMANCE=$(config_bool_or_default 'tts_log_performance' 'true')
 TTS_WARMUP=$(config_bool_or_default 'tts_warmup' 'true')
+TTS_THREADS=$(config_or_default 'tts_threads' '0')
 
 # EXTRA_KEYTERMS is a free-text field; "null" is a legitimate (if unlikely)
 # keyterm-list entry only if a user literally typed it, but an *absent*
@@ -97,6 +98,7 @@ FLAGS+=("--vad-threshold" "${VAD_THRESHOLD}")
 FLAGS+=("--debug-audio-max-files" "${DEBUG_AUDIO_MAX_FILES}")
 FLAGS+=("--tts-model" "${TTS_MODEL}")
 FLAGS+=("--tts-voice" "${TTS_VOICE}")
+FLAGS+=("--tts-threads" "${TTS_THREADS}")
 
 if bashio::var.true "${STT_ENABLED}"; then
     FLAGS+=("--stt-enabled")

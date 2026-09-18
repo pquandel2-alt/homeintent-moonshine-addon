@@ -379,13 +379,24 @@ class MoonshineAsrHandler(AsyncEventHandler):
             inference_time = session.inference_time_seconds
             finalize_time = session.finalize_time_seconds
             rtf = inference_time / audio_duration if audio_duration > 0 else 0.0
+            # v0.2.4: chunks/add_audio_total/add_audio_max/avg_chunk answer
+            # WHERE the time went -- if add_audio_total alone (excluding
+            # finalize) already exceeds audio_duration, the model is
+            # processing slower than real-time on this CPU (a genuine
+            # throughput problem, not a one-off stall); a max much larger
+            # than avg_chunk instead points at an isolated stall/backlog.
             _LOGGER.info(
-                "STT completed: model=%s audio=%.2fs inference=%.2fs finalize=%.2fs rtf=%.2f",
+                "STT completed: model=%s audio=%.2fs inference=%.2fs finalize=%.2fs rtf=%.2f "
+                "chunks=%d add_audio_total=%.2fs add_audio_max=%.3fs avg_chunk=%.3fs",
                 self._model_name,
                 audio_duration,
                 inference_time,
                 finalize_time,
                 rtf,
+                session.add_audio_chunk_count,
+                session.add_audio_compute_total_seconds,
+                session.add_audio_compute_max_seconds,
+                session.average_chunk_compute_seconds,
             )
 
         if self._save_debug_audio_enabled and raw_audio:

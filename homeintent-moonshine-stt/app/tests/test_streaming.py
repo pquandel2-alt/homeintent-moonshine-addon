@@ -179,3 +179,74 @@ class TestRealInferenceTiming:
         # Both add_audio() calls used an instant mock, so inference time
         # must stay near zero despite the 50ms real-world gap between them.
         assert session.inference_time_seconds < 0.01
+
+
+class TestChunkComputeBreakdown:
+    """v0.2.4: a real production log showed audio=4.6s but inference=7+s
+    (RTF > 1). These per-chunk metrics let a performance log line show
+    whether that's steady-state slower-than-real-time processing (every
+    chunk takes about the same, elevated time) or an isolated stall (one
+    chunk's compute time is way above the average)."""
+
+    @pytest.mark.asyncio
+    async def test_chunk_count_increments_per_add_audio_call(self, mock_transcriber, mock_stream):
+        session = MoonshineStreamingSession(mock_transcriber)
+
+        await session.add_audio([0.0] * 100)
+        await session.add_audio([0.0] * 100)
+        await session.add_audio([0.0] * 100)
+
+        assert session.add_audio_chunk_count == 3
+
+    @pytest.mark.asyncio
+    async def test_add_audio_compute_total_matches_inference_time_before_finalize(
+        self, mock_transcriber, mock_stream
+    ):
+        def slow_add_audio(_samples, _rate):
+            time.sleep(0.02)
+
+        mock_stream.add_audio.side_effect = slow_add_audio
+        session = MoonshineStreamingSession(mock_transcriber)
+
+        await session.add_audio([0.0] * 100)
+        await session.add_audio([0.0] * 100)
+
+        # No finalize() yet, so total add_audio compute equals inference time.
+        assert session.add_audio_compute_total_seconds >= 0.03
+        assert session.add_audio_compute_total_seconds == pytest.approx(
+            session.inference_time_seconds, abs=0.005
+        )
+
+    @pytest.mark.asyncio
+    async def test_max_chunk_compute_reflects_the_single_slowest_call(
+        self, mock_transcriber, mock_stream
+    ):
+        """One pathologically slow chunk (a stall) among otherwise fast
+        ones must be visible via the max, not averaged away."""
+        call_count = 0
+
+        def uneven_add_audio(_samples, _rate):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                time.sleep(0.05)  # the one slow/stalled chunk
+
+        mock_stream.add_audio.side_effect = uneven_add_audio
+        session = MoonshineStreamingSession(mock_transcriber)
+
+        for _ in range(4):
+            await session.add_audio([0.0] * 100)
+
+        assert session.add_audio_compute_max_seconds >= 0.04
+        # The average across 4 chunks (one of them 50ms, rest ~instant)
+        # must stay well below the max -- otherwise the stall is hidden.
+        assert session.average_chunk_compute_seconds < session.add_audio_compute_max_seconds / 2
+
+    @pytest.mark.asyncio
+    async def test_no_chunks_yields_zero_average_not_division_error(
+        self, mock_transcriber, mock_stream
+    ):
+        session = MoonshineStreamingSession(mock_transcriber)
+
+        assert session.add_audio_chunk_count == 0
+        assert session.average_chunk_compute_seconds == 0.0

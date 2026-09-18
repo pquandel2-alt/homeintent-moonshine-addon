@@ -50,6 +50,7 @@ options:
   tts_voice: juergen
   tts_log_performance: true
   tts_warmup: true
+  tts_threads: 0
 schema:
   stt_enabled: bool
   model: list(tiny|small)
@@ -71,4 +72,5 @@ schema:
   tts_voice: str
   tts_log_performance: bool
   tts_warmup: bool
+  tts_threads: int(0,64)
 homeassistant: "2023.11.0"
