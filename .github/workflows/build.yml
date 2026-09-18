@@ -253,7 +253,7 @@ jobs:
     # never committed automatically.
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.regenerate_fixture == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
