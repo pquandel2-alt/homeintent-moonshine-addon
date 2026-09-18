@@ -14,7 +14,7 @@ import pytest
 from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.error import Error as WyomingError
 from wyoming.event import Event, async_read_event
-from wyoming.info import Info
+from wyoming.info import Attribution, Info
 from wyoming.tts import Synthesize, SynthesizeVoice
 
 from app.handler import MoonshineAsrHandler
@@ -22,6 +22,12 @@ from app.handler import MoonshineAsrHandler
 
 class _FakeSynthesizer:
     """Stands in for app.tts_session.PocketTtsSynthesizer."""
+
+    engine_id = "pocket_tts"
+    model_name = "german"
+    program_name = "homeintent-pocket-tts"
+    description = "HomeIntent Pocket TTS - German streaming TTS"
+    attribution = Attribution(name="Kyutai", url="https://github.com/kyutai-labs/pocket-tts")
 
     def __init__(self, chunks: list[list[float]] | None = None, default_voice: str = "juergen"):
         self.sample_rate = 24000
@@ -148,6 +154,47 @@ class TestDescribeDiscovery:
         info = Info.from_event(events[0])
         assert len(info.asr) == 1
         assert len(info.tts) == 1
+
+    async def test_kokoro_engine_describe_uses_kokoro_metadata_not_kyutai(
+        self, mock_reader, collecting_writer
+    ):
+        """Wyoming discovery must be fully engine-agnostic: describing a
+        Kokoro-backed handler must never show Pocket TTS's own program
+        name/attribution -- see app/tts_engine.py's TtsSynthesizer
+        protocol and app/handler.py's generalized _handle_describe()."""
+
+        class _FakeKokoroSynthesizer:
+            engine_id = "kokoro_onnx"
+            sample_rate = 24000
+            default_voice = "martin"
+            model_name = "kokoro-82m-german-martin"
+            program_name = "homeintent-kokoro-onnx"
+            description = "German Kokoro-82M ONNX text-to-speech (voice: Martin)"
+            attribution = Attribution(
+                name="Godelaune (German Martin fine-tune) / hexgrad (Kokoro-82M)",
+                url="https://huggingface.co/Godelaune/Kokoro-82M-ONNX-German-Martin",
+            )
+
+            async def synthesize_stream(self, text, voice=None, stats=None):
+                yield None  # pragma: no cover - never called in this test
+
+        handler = MoonshineAsrHandler(
+            reader=mock_reader,
+            writer=collecting_writer,
+            transcriber=None,
+            tts_synthesizer=_FakeKokoroSynthesizer(),
+        )
+        await handler.handle_event(Event(type="describe", data={}))
+
+        events = await _read_all_events(collecting_writer)
+        info = Info.from_event(events[0])
+        assert len(info.tts) == 1
+        tts_program = info.tts[0]
+        assert tts_program.name == "homeintent-kokoro-onnx"
+        assert tts_program.voices[0].name == "martin"
+        assert "kyutai" not in tts_program.attribution.name.lower()
+        assert "kyutai" not in tts_program.attribution.url.lower()
+        assert tts_program.supports_synthesize_streaming is True
 
     async def test_neither_when_both_disabled(self, mock_reader, collecting_writer):
         handler = MoonshineAsrHandler(
@@ -306,6 +353,7 @@ class TestHandleSynthesize:
         assert len(perf_lines) == 1
         line = perf_lines[0]
         for field in (
+            "engine=",
             "lock_wait=",
             "model_compute=",
             "wyoming_send=",
@@ -315,6 +363,23 @@ class TestHandleSynthesize:
             "wall_rtf=",
         ):
             assert field in line, f"missing {field!r} in: {line}"
+
+    async def test_performance_log_reports_engine_id(self, mock_reader, collecting_writer, caplog):
+        """Item 18: the engine that actually served the request must be
+        identifiable in the log, so Pocket and Kokoro can be compared."""
+        synth = _FakeSynthesizer()
+        handler = MoonshineAsrHandler(
+            reader=mock_reader,
+            writer=collecting_writer,
+            transcriber=None,
+            tts_synthesizer=synth,
+            tts_log_performance=True,
+        )
+        with caplog.at_level("INFO"):
+            await handler.handle_event(Synthesize(text="Hallo").event())
+
+        perf_lines = [r.message for r in caplog.records if "TTS completed" in r.message]
+        assert "engine=pocket_tts" in perf_lines[0]
 
 
 @pytest.mark.asyncio

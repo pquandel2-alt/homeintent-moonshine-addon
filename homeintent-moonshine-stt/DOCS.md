@@ -35,31 +35,57 @@ over one Wyoming service.
 
 ### TTS
 
-- **tts_enabled** (default `false`): enable Kyutai Pocket TTS. Off by default on
+- **tts_enabled** (default `false`): enable text-to-speech. Off by default on
   upgrade so an existing STT-only install doesn't suddenly download an extra runtime
   and model — see the README's Backward Compatibility section.
+- **tts_engine** (default `pocket_tts`): `pocket_tts` (Kyutai Pocket TTS,
+  PyTorch, voice `juergen`) or `kokoro_onnx` (German Kokoro-82M fine-tune,
+  ONNX Runtime, voice `martin`, added in v0.3.0 to try for lower CPU
+  time-to-first-audio -- benchmark both on your own hardware before
+  switching a production setup, see Performance Notes). **Must stay
+  `pocket_tts` on upgrade** unless you explicitly opt in -- an existing
+  installation's persisted config predates this option entirely and must
+  keep behaving exactly as before.
 - **tts_model**: `german` (6 transformer layers, faster, default) or `german_24l`
-  (24 layers, higher quality, slower).
+  (24 layers, higher quality, slower). Pocket TTS only; ignored for `kokoro_onnx`.
 - **tts_voice** (default `juergen`): the German preset voice. `juergen` is the only
   real German preset Pocket TTS ships. Validated (and cached) once at add-on
   startup -- an invalid voice name fails startup immediately with a clear error,
-  instead of only on the first real synthesize request.
+  instead of only on the first real synthesize request. Pocket TTS only.
+- **kokoro_voice** (default `martin`): Kokoro ONNX voice. `martin` is the only
+  voice this add-on's German model ships. Validated the same way as `tts_voice`.
+  Ignored for `tts_engine: pocket_tts`.
+- **kokoro_speed** (default `1.0`, range `0.5`-`2.0`): Kokoro's own hard-enforced
+  speed range (verified from its source).
+- **kokoro_sentence_pause** / **kokoro_clause_pause** (defaults `0.25`/`0.1`
+  seconds): Kokoro's own real upstream defaults for the pause inserted after a
+  sentence/clause.
 - **tts_warmup** (default `true`): runs one discarded synthesis at startup so the
   first real request isn't slower than later ones. Pure performance optimization
-  (a failure here is logged but never fails startup).
+  (a failure here is logged but never fails startup). Applies to whichever engine
+  is selected.
 - **tts_log_performance** (default `true`): logs a compact per-request timing
-  breakdown (time-to-first-audio, lock-wait, model compute, Wyoming-send, wall
-  time, model RTF, wall RTF). Never logs the synthesized text.
+  breakdown (`engine=`, time-to-first-audio, `first_audio_to_ha`, lock-wait, model
+  compute, Wyoming-send, wall time, model RTF, wall RTF). Never logs the
+  synthesized text.
 - **tts_threads** (default `0` = auto): CPU threads Pocket TTS's PyTorch backend
   uses (`torch.set_num_threads()`). Pocket TTS's own library forces this to `1`
   internally at import time (`torch.set_num_threads(1)` in its `tts_model`
   module) -- `0` leaves that untouched; a positive value overrides it. This is
   a plausible real lever for real-time-factor on a multi-core host, since
-  Pocket TTS otherwise never uses more than one core by default. Benchmark
-  different values on your own hardware with `python -m app.tts_benchmark`
-  (sweeps `1,2,4,6,8,auto` by default -- see Performance Notes) before
-  changing it -- too high a value on a shared host can slow STT and TTS down
-  together instead of speeding TTS up (CPU oversubscription).
+  Pocket TTS otherwise never uses more than one core by default. Ignored for
+  `tts_engine: kokoro_onnx` (see `kokoro_threads`).
+- **kokoro_threads** (default `0` = auto): ONNX Runtime `intra_op_num_threads`
+  for Kokoro. `kokoro_onnx` itself builds its ONNX Runtime session with no
+  threading configuration at all (verified from its source) -- this add-on
+  builds the session itself with an explicit `SessionOptions` to make this
+  configurable. Ignored for `tts_engine: pocket_tts`.
+- Benchmark either engine's thread setting on your own hardware with
+  `python -m app.tts_benchmark --engine pocket_tts` /
+  `--engine kokoro_onnx` (sweeps `1,2,4,6,8,auto` by default -- see
+  Performance Notes) before changing it -- too high a value on a shared
+  host can slow STT and TTS down together instead of speeding TTS up (CPU
+  oversubscription).
 
 ### Recognition tuning (STT keyterms and vocabulary)
 

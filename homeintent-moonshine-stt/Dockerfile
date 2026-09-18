@@ -59,8 +59,16 @@ COPY rootfs /
 # for its cache location (see app/tts.py's module docstring). Kept as a
 # separate subdirectory from Moonshine's own model cache so STT and TTS
 # model files never collide and can be inspected/cleared independently.
+# KOKORO_ONNX_CACHE: app/kokoro_tts.py passes this as hf_hub_download()'s
+# own explicit cache_dir= (NOT via HF_HOME, which stays pointed at Pocket
+# TTS's cache above) so the Kokoro German model -- several hundred MB,
+# only ever downloaded when tts_engine=kokoro_onnx -- lives in its own
+# inspectable/clearable directory too, never baked into the image itself
+# (see config.yaml's `backup_exclude: ["models/*"]`, which already covers
+# this path).
 ENV MOONSHINE_VOICE_CACHE=/data/models
 ENV HF_HOME=/data/models/pocket-tts
+ENV KOKORO_ONNX_CACHE=/data/models/kokoro-onnx
 
 # Health check: real Wyoming describe round-trip, not a raw-byte grep (see
 # app/healthcheck.py). start-period raised from 60s: a first-run Pocket TTS

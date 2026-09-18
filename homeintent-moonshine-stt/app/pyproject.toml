@@ -1,6 +1,6 @@
 [project]
 name = "homeintent-moonshine-stt"
-version = "0.2.7"
+version = "0.3.0"
 description = "German speech-to-text (Moonshine) and text-to-speech (Kyutai Pocket TTS)"
 requires-python = ">=3.11"
 dependencies = [
@@ -9,6 +9,11 @@ dependencies = [
     "numpy==2.4.6",
     "websockets==17.1",
     "pocket-tts==3.1.0",
+    "huggingface_hub==1.32.0",
+    "kokoro-onnx==0.6.1",
+    "onnxruntime==1.30.0",
+    "espeakng-loader==0.2.4",
+    "phonemizer==3.4.0",
 ]
 
 [tool.pytest.ini_options]
@@ -53,6 +58,11 @@ ignore_missing_imports = true
 # install) -- ignore_missing_imports avoids that divergence causing CI to
 # fail on an "unused ignore" where a plain inline comment would not.
 module = ["requests.*", "huggingface_hub.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# onnxruntime and kokoro_onnx ship no py.typed marker/stubs.
+module = ["onnxruntime", "onnxruntime.*", "kokoro_onnx", "kokoro_onnx.*"]
 ignore_missing_imports = true
 
 [tool.ruff]

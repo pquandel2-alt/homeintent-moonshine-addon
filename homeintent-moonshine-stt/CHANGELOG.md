@@ -1,5 +1,72 @@
 # Changelog - HomeIntent Moonshine Voice Add-on
 
+## [0.3.0] - 2026-09-18
+
+Adds **Kokoro German ONNX** as a second, user-selectable local TTS engine
+alongside the existing Pocket TTS, integrated directly in-process (no
+second server, no HTTP hop). See `ABSCHLUSSBERICHT_V0.3.0.md` for the
+full analysis, verification, and remaining risks.
+
+### Added
+- **New TTS engine: Kokoro German ONNX** (`app/kokoro_tts.py`,
+  `app/kokoro_session.py`), using the `kokoro-onnx` package
+  (`Godelaune/Kokoro-82M-ONNX-German-Martin`, Apache-2.0 licensed model,
+  male voice "Martin", 24kHz output, CPU-only via ONNX Runtime). Selected
+  via the new `tts_engine: kokoro_onnx` option; default remains
+  `pocket_tts` for full backward compatibility with existing installs.
+- **Generalized TTS synthesizer interface** (`app/tts_engine.py`): a
+  shared `TtsSynthesizer` protocol (sample_rate, default_voice,
+  engine_id, model_name, program_name, attribution, description,
+  `synthesize_stream()`) used identically by `handler.py`/`__main__.py`
+  for both Pocket TTS and Kokoro ONNX -- no per-engine branching in the
+  Wyoming request/response path.
+- **New Kokoro options**: `kokoro_voice` (default `martin`),
+  `kokoro_speed`, `kokoro_threads` (0 = auto, same semantics as
+  `tts_threads`), `kokoro_sentence_pause`, `kokoro_clause_pause`.
+  Existing Pocket TTS options are unchanged.
+- **Persistent, on-demand model download**: the ~326MB Kokoro model is
+  never baked into the Docker image. It is downloaded via
+  `huggingface_hub.hf_hub_download` (atomic, resumable, cache-aware) into
+  `/data/models/kokoro-onnx/` only when `tts_enabled: true` AND
+  `tts_engine: kokoro_onnx`; selecting Pocket TTS never triggers a Kokoro
+  download. Already-covered by the existing `backup_exclude:
+  ["models/*"]`.
+- **Original German text normalizer** (`app/german_text_normalizer.py`):
+  expands times, temperatures, units, currency, and abbreviations (e.g.
+  "18:20 Uhr", "21,5 °C", "500 g", "49,99 EUR") before Kokoro
+  synthesis, so common HomeIntent sensor output is spoken correctly.
+- **Streaming synthesis**: Kokoro's real async `create_stream()`
+  generator feeds raw float32 chunks directly into the existing Wyoming
+  streaming pipeline, so Home Assistant receives the first audio chunk
+  while the rest is still being generated -- matching Pocket TTS's own
+  behavior, never assembling a full WAV first.
+- **Extended benchmark** (`app/tts_benchmark.py`): `python -m
+  app.tts_benchmark --engine pocket_tts|kokoro_onnx` now measures both
+  engines against the same 4 German test sentences (model load, warmup,
+  TTFA, first-chunk duration, model compute time, RTF, peak RSS) across a
+  thread-count sweep, run on the user's own target hardware.
+- **Dynamic Wyoming discovery**: `describe` now reports correct,
+  per-engine metadata -- Pocket TTS still advertises "HomeIntent Pocket
+  TTS" with Kyutai attribution and voice "juergen"; Kokoro advertises
+  "HomeIntent Kokoro ONNX" with Godelaune/hexgrad attribution and voice
+  "martin". No cross-engine attribution leakage.
+- **Performance log** (`_log_tts_performance`) now includes `engine=...`
+  so Pocket TTS and Kokoro ONNX runs can be directly compared.
+
+### Dependencies
+- Added `huggingface_hub`, `kokoro-onnx`, `onnxruntime`, `espeakng-loader`,
+  `phonemizer` to `requirements-runtime.txt` / `app/pyproject.toml`. No
+  system `espeak-ng` apt package is required -- `espeakng-loader` ships
+  self-contained prebuilt libraries and data for both amd64 and aarch64.
+  No web server packages (FastAPI/uvicorn) were added; Kokoro is
+  integrated fully in-process.
+
+### Unchanged
+- Pocket TTS (models, voices, `tts_threads`, warmup, streaming protocol)
+  continues to work exactly as before; it remains the default engine.
+  STT (Moonshine), keyterms, HA vocabulary, and the wake word/audio input
+  pipeline were not touched.
+
 ## [0.2.7] - 2026-09-18
 
 Real Wyoming TTS audio streaming to Home Assistant. See

@@ -7,6 +7,7 @@ set -e
 export PYTHONUNBUFFERED=1
 export MOONSHINE_VOICE_CACHE=/data/models
 export HF_HOME=/data/models/pocket-tts
+export KOKORO_ONNX_CACHE=/data/models/kokoro-onnx
 
 # Read a config option, falling back to a hard-coded default (matching
 # config.yaml's own default) whenever the Supervisor value is absent,
@@ -56,11 +57,18 @@ DECODE_INCOMPLETE_LINES=$(config_bool_or_default 'decode_incomplete_lines' 'true
 SAVE_DEBUG_AUDIO=$(config_bool_or_default 'save_debug_audio' 'false')
 DEBUG_AUDIO_MAX_FILES=$(config_or_default 'debug_audio_max_files' '100')
 TTS_ENABLED=$(config_bool_or_default 'tts_enabled' 'false')
+# MUST default to pocket_tts -- see config.yaml's own comment on this option.
+TTS_ENGINE=$(config_or_default 'tts_engine' 'pocket_tts')
 TTS_MODEL=$(config_or_default 'tts_model' 'german')
 TTS_VOICE=$(config_or_default 'tts_voice' 'juergen')
 TTS_LOG_PERFORMANCE=$(config_bool_or_default 'tts_log_performance' 'true')
 TTS_WARMUP=$(config_bool_or_default 'tts_warmup' 'true')
 TTS_THREADS=$(config_or_default 'tts_threads' '0')
+KOKORO_VOICE=$(config_or_default 'kokoro_voice' 'martin')
+KOKORO_SPEED=$(config_or_default 'kokoro_speed' '1.0')
+KOKORO_THREADS=$(config_or_default 'kokoro_threads' '0')
+KOKORO_SENTENCE_PAUSE=$(config_or_default 'kokoro_sentence_pause' '0.25')
+KOKORO_CLAUSE_PAUSE=$(config_or_default 'kokoro_clause_pause' '0.1')
 
 # EXTRA_KEYTERMS is a free-text field; "null" is a legitimate (if unlikely)
 # keyterm-list entry only if a user literally typed it, but an *absent*
@@ -79,8 +87,13 @@ if bashio::var.true "${STT_ENABLED}"; then
 fi
 bashio::log.info "TTS enabled: ${TTS_ENABLED}"
 if bashio::var.true "${TTS_ENABLED}"; then
-    bashio::log.info "TTS model: ${TTS_MODEL}"
-    bashio::log.info "TTS voice: ${TTS_VOICE}"
+    bashio::log.info "TTS engine: ${TTS_ENGINE}"
+    if [ "${TTS_ENGINE}" = "kokoro_onnx" ]; then
+        bashio::log.info "TTS voice: ${KOKORO_VOICE}"
+    else
+        bashio::log.info "TTS model: ${TTS_MODEL}"
+        bashio::log.info "TTS voice: ${TTS_VOICE}"
+    fi
 fi
 bashio::log.info "Log Level: ${LOG_LEVEL}"
 
@@ -96,9 +109,15 @@ FLAGS+=("--ha-vocabulary-refresh-minutes" "${HA_VOCABULARY_REFRESH_MINUTES}")
 FLAGS+=("--transcription-interval" "${TRANSCRIPTION_INTERVAL}")
 FLAGS+=("--vad-threshold" "${VAD_THRESHOLD}")
 FLAGS+=("--debug-audio-max-files" "${DEBUG_AUDIO_MAX_FILES}")
+FLAGS+=("--tts-engine" "${TTS_ENGINE}")
 FLAGS+=("--tts-model" "${TTS_MODEL}")
 FLAGS+=("--tts-voice" "${TTS_VOICE}")
 FLAGS+=("--tts-threads" "${TTS_THREADS}")
+FLAGS+=("--kokoro-voice" "${KOKORO_VOICE}")
+FLAGS+=("--kokoro-speed" "${KOKORO_SPEED}")
+FLAGS+=("--kokoro-threads" "${KOKORO_THREADS}")
+FLAGS+=("--kokoro-sentence-pause" "${KOKORO_SENTENCE_PAUSE}")
+FLAGS+=("--kokoro-clause-pause" "${KOKORO_CLAUSE_PAUSE}")
 
 if bashio::var.true "${STT_ENABLED}"; then
     FLAGS+=("--stt-enabled")

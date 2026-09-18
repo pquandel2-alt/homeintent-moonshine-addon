@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 from wyoming.error import Error as WyomingError
 from wyoming.event import Event, async_read_event
-from wyoming.info import Info
+from wyoming.info import Attribution, Info
 from wyoming.tts import Synthesize, SynthesizeChunk, SynthesizeStart, SynthesizeStop
 
 from app.handler import MoonshineAsrHandler
@@ -32,6 +32,12 @@ class _FakeSynthesizer:
     (once as a synthesize-chunk, once as the backwards-compatible
     synthesize event).
     """
+
+    engine_id = "pocket_tts"
+    model_name = "german"
+    program_name = "homeintent-pocket-tts"
+    description = "HomeIntent Pocket TTS - German streaming TTS"
+    attribution = Attribution(name="Kyutai", url="https://github.com/kyutai-labs/pocket-tts")
 
     def __init__(self, chunks: list[list[float]] | None = None, default_voice: str = "juergen"):
         self.sample_rate = 24000

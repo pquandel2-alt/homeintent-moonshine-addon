@@ -14,6 +14,13 @@ from app.debug_audio import DEFAULT_DEBUG_AUDIO_DIR
 from app.ha_vocabulary import fetch_ha_vocabulary
 from app.handler import MoonshineAsrHandler
 from app.keyterms import apply_safe_keyterms, merge_keyterms, parse_extra_keyterms
+from app.kokoro_session import KokoroOnnxSynthesizer
+from app.kokoro_tts import (
+    DEFAULT_KOKORO_REVISION,
+    DEFAULT_KOKORO_VOICE,
+    KokoroModelDownloadError,
+    load_kokoro_model,
+)
 from app.models import (
     DEFAULT_DECODE_INCOMPLETE_LINES,
     DEFAULT_KEYTERM_BOOST,
@@ -23,12 +30,18 @@ from app.models import (
     load_transcriber,
 )
 from app.tts import DEFAULT_TTS_VOICE, GermanTtsModel, load_tts_model
+from app.tts_engine import TtsSynthesizer
 from app.tts_session import PocketTtsSynthesizer
 from app.validation import (
     validate_debug_audio_max_files,
     validate_ha_vocabulary_refresh_minutes,
     validate_keyterm_boost,
+    validate_kokoro_clause_pause,
+    validate_kokoro_sentence_pause,
+    validate_kokoro_speed,
+    validate_kokoro_threads,
     validate_transcription_interval,
+    validate_tts_engine,
     validate_tts_threads,
     validate_vad_threshold,
 )
@@ -41,7 +54,7 @@ logging.basicConfig(
 )
 _LOGGER = logging.getLogger(__name__)
 
-VERSION = "0.2.7"
+VERSION = "0.3.0"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -101,14 +114,38 @@ def build_arg_parser() -> argparse.ArgumentParser:
         # previously STT-only installation -- see
         # ABSCHLUSSBERICHT_V0.2.0.md, "Backward compatibility".
         default=False,
-        help="Enable Kyutai Pocket TTS text-to-speech",
+        help="Enable text-to-speech (engine selected via --tts-engine)",
+    )
+    parser.add_argument(
+        "--tts-engine",
+        choices=["pocket_tts", "kokoro_onnx"],
+        # MUST default to pocket_tts: an existing v0.2.7 installation's
+        # persisted options.json predates this option entirely. This add-on
+        # cannot inspect Supervisor's own closed-source schema-upgrade code
+        # from here, so it does not rely on any assumption about what
+        # Supervisor resolves a missing key to -- rootfs's run script reads
+        # every option through its own config_or_default() helper (falling
+        # back to this exact same default whenever bashio::config returns
+        # empty/null, e.g. an absent key), the identical defensive pattern
+        # already exercised end to end when tts_enabled/tts_model/etc. were
+        # first added on top of a pure-STT v0.1.x install for v0.2.0 (see
+        # ABSCHLUSSBERICHT_V0.2.0.md's "Backward compatibility" section).
+        # Upgrading must never silently switch a working Pocket TTS setup to
+        # a completely different, undownloaded engine.
+        default="pocket_tts",
+        help="Which TTS engine to use when tts_enabled (default: pocket_tts)",
     )
     parser.add_argument(
         "--tts-model",
         choices=[m.value for m in GermanTtsModel],
         default=GermanTtsModel.GERMAN.value,
+        help="Pocket TTS model config (ignored for tts_engine=kokoro_onnx)",
     )
-    parser.add_argument("--tts-voice", default=DEFAULT_TTS_VOICE)
+    parser.add_argument(
+        "--tts-voice",
+        default=DEFAULT_TTS_VOICE,
+        help="Pocket TTS voice (ignored for tts_engine=kokoro_onnx)",
+    )
     parser.add_argument(
         "--tts-log-performance",
         action=argparse.BooleanOptionalAction,
@@ -125,7 +162,43 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--tts-threads",
         type=int,
         default=0,
-        help="torch intra-op CPU threads for Pocket TTS (0 = PyTorch's own default)",
+        help="torch intra-op CPU threads for Pocket TTS (0 = PyTorch's own default; "
+        "ignored for tts_engine=kokoro_onnx, see --kokoro-threads)",
+    )
+
+    parser.add_argument(
+        "--kokoro-voice",
+        default=DEFAULT_KOKORO_VOICE,
+        help="Kokoro ONNX voice (ignored for tts_engine=pocket_tts)",
+    )
+    parser.add_argument(
+        "--kokoro-speed",
+        type=float,
+        default=1.0,
+        help="Kokoro ONNX speech speed, 0.5-2.0 (kokoro-onnx's own valid range)",
+    )
+    parser.add_argument(
+        "--kokoro-threads",
+        type=int,
+        default=0,
+        help="ONNX Runtime intra-op CPU threads for Kokoro (0 = onnxruntime's own default)",
+    )
+    parser.add_argument(
+        "--kokoro-sentence-pause",
+        type=float,
+        default=0.25,
+        help="Pause (seconds) after a sentence, Kokoro ONNX's own default",
+    )
+    parser.add_argument(
+        "--kokoro-clause-pause",
+        type=float,
+        default=0.1,
+        help="Pause (seconds) after a clause, Kokoro ONNX's own default",
+    )
+    parser.add_argument(
+        "--kokoro-model-revision",
+        default=DEFAULT_KOKORO_REVISION,
+        help="Git revision of the Kokoro German model repo to download (advanced)",
     )
 
     return parser
@@ -155,11 +228,17 @@ def _load_json_config_overrides(args: argparse.Namespace) -> bool:
             "save_debug_audio",
             "debug_audio_max_files",
             "tts_enabled",
+            "tts_engine",
             "tts_model",
             "tts_voice",
             "tts_log_performance",
             "tts_warmup",
             "tts_threads",
+            "kokoro_voice",
+            "kokoro_speed",
+            "kokoro_threads",
+            "kokoro_sentence_pause",
+            "kokoro_clause_pause",
         ):
             if key in config:
                 setattr(args, key.replace("-", "_"), config[key])
@@ -263,6 +342,11 @@ def _validate_args(args: argparse.Namespace) -> bool:
         validate_debug_audio_max_files(args.debug_audio_max_files)
         validate_ha_vocabulary_refresh_minutes(args.ha_vocabulary_refresh_minutes)
         validate_tts_threads(args.tts_threads)
+        validate_tts_engine(args.tts_engine)
+        validate_kokoro_speed(args.kokoro_speed)
+        validate_kokoro_threads(args.kokoro_threads)
+        validate_kokoro_sentence_pause(args.kokoro_sentence_pause)
+        validate_kokoro_clause_pause(args.kokoro_clause_pause)
     except ValueError as e:
         _LOGGER.error(f"Invalid configuration: {e}")
         return False
@@ -307,18 +391,33 @@ def _log_startup_banner(
         _LOGGER.info("STT: model cache=%s", DEFAULT_MODEL_CACHE_DIR)
     _LOGGER.info("TTS: enabled=%s", args.tts_enabled)
     if args.tts_enabled:
-        _LOGGER.info("TTS: engine=Pocket TTS model=%s voice=%s", args.tts_model, args.tts_voice)
-        _LOGGER.info(
-            "TTS: threads=%s",
-            "auto (PyTorch default)" if args.tts_threads == 0 else str(args.tts_threads),
-        )
+        _LOGGER.info("TTS: engine=%s", args.tts_engine)
+        if args.tts_engine == "kokoro_onnx":
+            _LOGGER.info(
+                "TTS: model=german-martin voice=%s runtime=ONNX Runtime speed=%s",
+                args.kokoro_voice,
+                args.kokoro_speed,
+            )
+            _LOGGER.info(
+                "TTS: threads=%s",
+                "auto (onnxruntime default)"
+                if args.kokoro_threads == 0
+                else str(args.kokoro_threads),
+            )
+        else:
+            _LOGGER.info("TTS: model=%s voice=%s runtime=PyTorch", args.tts_model, args.tts_voice)
+            _LOGGER.info(
+                "TTS: threads=%s",
+                "auto (PyTorch default)" if args.tts_threads == 0 else str(args.tts_threads),
+            )
+        _LOGGER.info("TTS: sample rate=24000 Hz")
 
 
 def _build_handler_factory(
     args: argparse.Namespace,
     transcriber: object | None,
     moonshine_lock: asyncio.Lock,
-    tts_synthesizer: PocketTtsSynthesizer | None,
+    tts_synthesizer: TtsSynthesizer | None,
 ) -> partial:  # type: ignore[type-arg]
     return partial(
         MoonshineAsrHandler,
@@ -332,12 +431,12 @@ def _build_handler_factory(
         debug_audio_dir=DEFAULT_DEBUG_AUDIO_DIR,
         moonshine_lock=moonshine_lock,
         tts_synthesizer=tts_synthesizer,
-        tts_model_name=args.tts_model if args.tts_enabled else "",
+        tts_model_name=tts_synthesizer.model_name if tts_synthesizer is not None else "",
         tts_log_performance=args.tts_log_performance,
     )
 
 
-def _load_tts_synthesizer(args: argparse.Namespace) -> PocketTtsSynthesizer | None:
+def _load_pocket_tts_synthesizer(args: argparse.Namespace) -> PocketTtsSynthesizer | None:
     """Load the Pocket TTS model, validate+cache the configured default
     voice, and optionally warm it up. Returns None on failure.
 
@@ -356,7 +455,9 @@ def _load_tts_synthesizer(args: argparse.Namespace) -> PocketTtsSynthesizer | No
         _LOGGER.error(f"Failed to load Pocket TTS model: {e}")
         return None
 
-    synthesizer = PocketTtsSynthesizer(tts_model, default_voice=args.tts_voice)
+    synthesizer = PocketTtsSynthesizer(
+        tts_model, default_voice=args.tts_voice, model_name=args.tts_model
+    )
     try:
         asyncio.run(synthesizer.preload_default_voice())
     except Exception as e:
@@ -371,6 +472,64 @@ def _load_tts_synthesizer(args: argparse.Namespace) -> PocketTtsSynthesizer | No
             _LOGGER.warning("Pocket TTS warmup failed (continuing without it): %s", e)
 
     return synthesizer
+
+
+def _load_kokoro_synthesizer(args: argparse.Namespace) -> KokoroOnnxSynthesizer | None:
+    """Resolve/download the Kokoro German model, validate+cache the
+    configured default voice, and optionally warm it up. Returns None on
+    failure.
+
+    Exactly the same fail-loudly philosophy as
+    _load_pocket_tts_synthesizer(): a download failure (network, repo
+    unreachable, corrupt/partial file) or an invalid ``kokoro_voice`` is a
+    fatal, clearly logged startup error -- the user explicitly chose
+    ``tts_engine: kokoro_onnx``, so silently falling back to Pocket TTS (a
+    different engine, different voice, possibly not even downloaded)
+    would hide a real configuration problem instead of surfacing it (see
+    this module's own docstring / ABSCHLUSSBERICHT_V0.3.0.md).
+    """
+    try:
+        kokoro_model = load_kokoro_model(
+            revision=args.kokoro_model_revision,
+            intra_op_num_threads=args.kokoro_threads,
+        )
+    except KokoroModelDownloadError as e:
+        _LOGGER.error(f"Failed to download/load Kokoro ONNX model: {e}")
+        return None
+    except Exception as e:
+        _LOGGER.error(f"Failed to load Kokoro ONNX model: {e}")
+        return None
+
+    synthesizer = KokoroOnnxSynthesizer(
+        kokoro_model,
+        default_voice=args.kokoro_voice,
+        speed=args.kokoro_speed,
+        sentence_pause=args.kokoro_sentence_pause,
+        clause_pause=args.kokoro_clause_pause,
+    )
+    try:
+        asyncio.run(synthesizer.preload_default_voice())
+    except Exception as e:
+        _LOGGER.error(f"Failed to resolve Kokoro voice '{args.kokoro_voice}': {e}")
+        return None
+
+    if args.tts_warmup:
+        try:
+            elapsed = asyncio.run(synthesizer.warmup())
+            _LOGGER.info("Kokoro ONNX warmup completed in %.2fs", elapsed)
+        except Exception as e:
+            _LOGGER.warning("Kokoro ONNX warmup failed (continuing without it): %s", e)
+
+    return synthesizer
+
+
+def _load_tts_synthesizer(args: argparse.Namespace) -> TtsSynthesizer | None:
+    """Dispatch to the configured engine's own loader. Returns None on
+    failure (see each loader's own docstring -- never a silent fallback to
+    the other engine)."""
+    if args.tts_engine == "kokoro_onnx":
+        return _load_kokoro_synthesizer(args)
+    return _load_pocket_tts_synthesizer(args)
 
 
 def _load_and_bias_transcriber(
@@ -422,7 +581,7 @@ class _LoadedEngines:
         manual_keyterms: list[str],
         initial_ha_terms: list[str],
         accepted_keyterms: list[str],
-        tts_synthesizer: PocketTtsSynthesizer | None,
+        tts_synthesizer: TtsSynthesizer | None,
     ) -> None:
         self.transcriber = transcriber
         self.manual_keyterms = manual_keyterms
@@ -447,7 +606,7 @@ def _load_engines(args: argparse.Namespace) -> _LoadedEngines | None:
             return None
         transcriber, manual_keyterms, initial_ha_terms, accepted_keyterms = loaded
 
-    tts_synthesizer: PocketTtsSynthesizer | None = None
+    tts_synthesizer: TtsSynthesizer | None = None
     if args.tts_enabled:
         tts_synthesizer = _load_tts_synthesizer(args)
         if tts_synthesizer is None:

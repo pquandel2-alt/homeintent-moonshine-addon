@@ -26,6 +26,26 @@ HA_VOCABULARY_REFRESH_MINUTES_MAX = 1440
 TTS_THREADS_MIN = 0  # 0 = auto (PyTorch's own default, untouched)
 TTS_THREADS_MAX = 64  # generous upper bound; no real CPU has more cores
 
+# Kokoro-specific bounds. Speed is not our own defensive choice -- it is
+# kokoro-onnx's own hard-enforced range, verified directly from source
+# (``Kokoro._prepare()`` raises ValueError outside 0.5..2.0).
+KOKORO_SPEED_MIN = 0.5
+KOKORO_SPEED_MAX = 2.0
+
+KOKORO_THREADS_MIN = 0  # 0 = auto (onnxruntime's own default, untouched)
+KOKORO_THREADS_MAX = 64  # same generous bound as tts_threads
+
+# Pause bounds are our own defensive UI bounds around kokoro-onnx's own
+# real defaults (sentence_pause=0.25, clause_pause=0.1, verified from
+# source) -- not an upstream-documented limit.
+KOKORO_SENTENCE_PAUSE_MIN = 0.0
+KOKORO_SENTENCE_PAUSE_MAX = 2.0
+
+KOKORO_CLAUSE_PAUSE_MIN = 0.0
+KOKORO_CLAUSE_PAUSE_MAX = 2.0
+
+TTS_ENGINES = ("pocket_tts", "kokoro_onnx")
+
 
 def validate_transcription_interval(value: float) -> float:
     if not (TRANSCRIPTION_INTERVAL_MIN <= value <= TRANSCRIPTION_INTERVAL_MAX):
@@ -77,5 +97,46 @@ def validate_tts_threads(value: int) -> int:
     if not (TTS_THREADS_MIN <= value <= TTS_THREADS_MAX):
         raise ValueError(
             f"tts_threads must be between {TTS_THREADS_MIN} and {TTS_THREADS_MAX}, got {value}"
+        )
+    return value
+
+
+def validate_tts_engine(value: str) -> str:
+    if value not in TTS_ENGINES:
+        raise ValueError(f"tts_engine must be one of {TTS_ENGINES}, got {value!r}")
+    return value
+
+
+def validate_kokoro_speed(value: float) -> float:
+    if not (KOKORO_SPEED_MIN <= value <= KOKORO_SPEED_MAX):
+        raise ValueError(
+            f"kokoro_speed must be between {KOKORO_SPEED_MIN} and {KOKORO_SPEED_MAX}, got {value}"
+        )
+    return value
+
+
+def validate_kokoro_threads(value: int) -> int:
+    if not (KOKORO_THREADS_MIN <= value <= KOKORO_THREADS_MAX):
+        raise ValueError(
+            f"kokoro_threads must be between {KOKORO_THREADS_MIN} and {KOKORO_THREADS_MAX}, "
+            f"got {value}"
+        )
+    return value
+
+
+def validate_kokoro_sentence_pause(value: float) -> float:
+    if not (KOKORO_SENTENCE_PAUSE_MIN <= value <= KOKORO_SENTENCE_PAUSE_MAX):
+        raise ValueError(
+            f"kokoro_sentence_pause must be between {KOKORO_SENTENCE_PAUSE_MIN} and "
+            f"{KOKORO_SENTENCE_PAUSE_MAX}, got {value}"
+        )
+    return value
+
+
+def validate_kokoro_clause_pause(value: float) -> float:
+    if not (KOKORO_CLAUSE_PAUSE_MIN <= value <= KOKORO_CLAUSE_PAUSE_MAX):
+        raise ValueError(
+            f"kokoro_clause_pause must be between {KOKORO_CLAUSE_PAUSE_MIN} and "
+            f"{KOKORO_CLAUSE_PAUSE_MAX}, got {value}"
         )
     return value

@@ -32,8 +32,7 @@ from app.audio import float32_to_pcm_int16, pcm_int16_to_float32, validate_audio
 from app.debug_audio import DEFAULT_DEBUG_AUDIO_DIR, save_debug_audio
 from app.models import get_model_info
 from app.streaming import MoonshineStreamingSession
-from app.tts import get_tts_model_info
-from app.tts_session import TtsSynthesisStats, TtsSynthesizer
+from app.tts_engine import TtsSynthesisStats, TtsSynthesizer
 from app.tts_stream import TtsStreamPhase, TtsStreamState
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,10 +44,6 @@ _ATTRIBUTION_PROGRAM = Attribution(
 _ATTRIBUTION_MODEL = Attribution(
     name="Moonshine AI",
     url="https://github.com/moonshine-ai/moonshine",
-)
-_ATTRIBUTION_TTS_MODEL = Attribution(
-    name="Kyutai",
-    url="https://github.com/kyutai-labs/pocket-tts",
 )
 
 
@@ -271,21 +266,21 @@ class MoonshineAsrHandler(AsyncEventHandler):
 
         tts_programs = []
         if self._tts_synthesizer is not None:
-            tts_model_info = get_tts_model_info(self._tts_model_name)
+            synth = self._tts_synthesizer
             tts_voice = TtsVoice(
-                name=self._tts_synthesizer.default_voice,
-                attribution=_ATTRIBUTION_TTS_MODEL,
+                name=synth.default_voice,
+                attribution=synth.attribution,
                 installed=True,
-                description=tts_model_info.get("description", ""),
+                description=synth.description,
                 version=None,
                 languages=[self._language],
             )
             tts_programs.append(
                 TtsProgram(
-                    name="homeintent-pocket-tts",
-                    attribution=_ATTRIBUTION_TTS_MODEL,
+                    name=synth.program_name,
+                    attribution=synth.attribution,
                     installed=True,
-                    description="HomeIntent Pocket TTS - German streaming TTS",
+                    description=synth.description,
                     version=None,
                     voices=[tts_voice],
                     # True: synthesize-start/-chunk/-stop are fully
@@ -778,10 +773,14 @@ class MoonshineAsrHandler(AsyncEventHandler):
             tts_stats.model_generation_seconds / audio_duration if audio_duration > 0 else 0.0
         )
         wall_rtf = wall_time / audio_duration if audio_duration > 0 else 0.0
+        engine_id = (
+            self._tts_synthesizer.engine_id if self._tts_synthesizer is not None else "unknown"
+        )
         _LOGGER.info(
-            "TTS completed: model=%s chars=%d protocol_mode=%s ttfa_generated=%.3fs "
+            "TTS completed: engine=%s model=%s chars=%d protocol_mode=%s ttfa_generated=%.3fs "
             "ttfa_sent=%.3fs first_audio_to_ha=%.3fs lock_wait=%.3fs model_compute=%.2fs "
             "wyoming_send=%.3fs wall=%.2fs audio=%.2fs model_rtf=%.2f wall_rtf=%.2f",
+            engine_id,
             self._tts_model_name,
             len(text),
             protocol_mode,

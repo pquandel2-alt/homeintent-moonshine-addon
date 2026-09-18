@@ -111,13 +111,42 @@ The add-on is configured via Home Assistant's UI:
 
 ### TTS Options
 
+Two TTS engines are available, selected with **tts_engine**:
+
+- **Pocket TTS** (`pocket_tts`, the default): [Kyutai's Pocket TTS](https://github.com/kyutai-labs/pocket-tts),
+  PyTorch-based, voice **juergen**. Kept as the default for full backward
+  compatibility — an existing installation's behavior never changes on
+  upgrade.
+- **Kokoro ONNX** (`kokoro_onnx`): a German fine-tune of
+  [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) running on
+  [ONNX Runtime](https://onnxruntime.ai/) instead of PyTorch, voice
+  **Martin**. No GPU needed (same as Pocket TTS). Added in v0.3.0
+  specifically to try for lower CPU time-to-first-audio than Pocket TTS —
+  see [Performance](#performance) for what has actually been measured on
+  this add-on's own target hardware, and benchmark both yourself with
+  `python -m app.tts_benchmark --engine pocket_tts` /
+  `--engine kokoro_onnx` before switching a production setup.
+
 | Option | Values | Default | Description |
 |--------|--------|---------|-------------|
-| **tts_enabled** | `true`/`false` | `false` | Enable Kyutai Pocket TTS text-to-speech. Off by default on upgrade — see [Backward compatibility](#backward-compatibility) |
-| **tts_model** | `german`, `german_24l` | `german` | TTS model: `german` (6 transformer layers) is faster and is the default; `german_24l` (24 layers) is higher quality but slower — see [Performance](#performance) |
-| **tts_voice** | voice name or `hf://...` path | `juergen` | The predefined German voice to use. `juergen` is the only real German preset voice Pocket TTS ships. Advanced: any Pocket TTS voice name (e.g. an English preset) or an `hf://kyutai/tts-voices/...` reference also works |
-| **tts_log_performance** | `true`/`false` | `true` | Log a compact per-request timing breakdown (TTFA, lock-wait, model compute, Wyoming-send, wall time, model RTF, wall RTF). Never includes the synthesized text |
-| **tts_warmup** | `true`/`false` | `true` | Run one discarded synthesis at startup so the first real TTS request isn't slower than later ones. Also validates `tts_voice` at startup — an invalid voice fails the add-on immediately with a clear error, instead of only on the first real request |
+| **tts_enabled** | `true`/`false` | `false` | Enable text-to-speech (engine selected via `tts_engine`). Off by default on upgrade — see [Backward compatibility](#backward-compatibility) |
+| **tts_engine** | `pocket_tts`, `kokoro_onnx` | `pocket_tts` | Which TTS engine to use. **Must stay `pocket_tts` on upgrade** unless you explicitly opt in — see above |
+| **tts_model** | `german`, `german_24l` | `german` | Pocket TTS model: `german` (6 transformer layers) is faster and is the default; `german_24l` (24 layers) is higher quality but slower. Ignored for `tts_engine: kokoro_onnx` |
+| **tts_voice** | voice name or `hf://...` path | `juergen` | Pocket TTS voice. `juergen` is the only real German preset voice Pocket TTS ships. Ignored for `tts_engine: kokoro_onnx` (see `kokoro_voice`) |
+| **tts_log_performance** | `true`/`false` | `true` | Log a compact per-request timing breakdown (`engine=`, TTFA, lock-wait, model compute, Wyoming-send, wall time, model RTF, wall RTF). Never includes the synthesized text |
+| **tts_warmup** | `true`/`false` | `true` | Run one discarded synthesis at startup so the first real TTS request isn't slower than later ones. Also validates the configured voice at startup — an invalid voice fails the add-on immediately with a clear error, instead of only on the first real request |
+| **tts_threads** | `0`–`64` | `0` | Pocket TTS: PyTorch intra-op CPU threads (`0` = PyTorch's own default). Ignored for `tts_engine: kokoro_onnx` (see `kokoro_threads`) |
+| **kokoro_voice** | voice name | `martin` | Kokoro ONNX voice. `martin` is the only voice this add-on's German model ships. Ignored for `tts_engine: pocket_tts` |
+| **kokoro_speed** | `0.5`–`2.0` | `1.0` | Kokoro ONNX speech speed (kokoro-onnx's own valid range) |
+| **kokoro_threads** | `0`–`64` | `0` | ONNX Runtime intra-op CPU threads (`0` = onnxruntime's own default) |
+| **kokoro_sentence_pause** | seconds | `0.25` | Pause after a sentence (kokoro-onnx's own default) |
+| **kokoro_clause_pause** | seconds | `0.1` | Pause after a clause (kokoro-onnx's own default) |
+
+Picking an unsupported combination (e.g. a Pocket voice name while
+`tts_engine: kokoro_onnx` is selected) can't happen: each engine only ever
+reads its own voice/model/thread options, and a genuinely invalid voice
+for whichever engine is active fails startup with a clear error instead of
+silently falling back to the other engine.
 
 ### Example Configuration
 
@@ -404,7 +433,8 @@ mypy --config-file app/pyproject.toml app/
 ## License
 
 This add-on's code is licensed under the MIT License — see [LICENSE](LICENSE). Pocket
-TTS's own code is also MIT licensed.
+TTS's own code is also MIT licensed. Kokoro ONNX's own runtime code
+(`kokoro-onnx`) is also MIT licensed.
 
 **Model weights are NOT all MIT licensed, and differ between STT and TTS:**
 
@@ -420,6 +450,13 @@ TTS's own code is also MIT licensed.
   license field on Hugging Face's `kyutai/pocket-tts` model card could not be verified
   during this add-on's development (see `ABSCHLUSSBERICHT_V0.2.0.md`) — review it
   yourself at https://huggingface.co/kyutai/pocket-tts before commercial use.
+- **Kokoro ONNX German "Martin" model weights**: Apache License 2.0 (per
+  [Godelaune/Kokoro-82M-ONNX-German-Martin](https://huggingface.co/Godelaune/Kokoro-82M-ONNX-German-Martin)'s
+  own README — a fine-tune of hexgrad's Kokoro-82M, also Apache 2.0). No
+  immutable Git revision could be found published for that model
+  repository at the time this add-on was built, so `main` is used by
+  default; see `ABSCHLUSSBERICHT_V0.3.0.md` and the `kokoro_model_revision`
+  advanced setting if a stable tag is published later.
 
 ## Contributing
 
@@ -432,6 +469,9 @@ Issues and pull requests are welcome! Please ensure:
 
 - **Moonshine ASR**: https://github.com/moonshine-ai/moonshine
 - **Pocket TTS**: https://github.com/kyutai-labs/pocket-tts
+- **Kokoro ONNX runtime**: https://github.com/thewh1teagle/kokoro-onnx
+- **Kokoro-82M / German "Martin" fine-tune**: https://huggingface.co/hexgrad/Kokoro-82M,
+  https://huggingface.co/Godelaune/Kokoro-82M-ONNX-German-Martin
 - **Wyoming Protocol**: https://github.com/rhasspy/wyoming
 - **Home Assistant**: https://www.home-assistant.io
 

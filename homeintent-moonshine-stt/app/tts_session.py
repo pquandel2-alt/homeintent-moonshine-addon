@@ -4,6 +4,10 @@ Bridges Wyoming synthesize requests to Pocket TTS's own streaming
 generation API. See app/tts.py's module docstring for the verified facts
 this design relies on (thread-safety, streaming semantics, voice
 resolution).
+
+The generic synthesizer interface/stats type (shared with Kokoro ONNX, see
+app/kokoro_session.py) live in app/tts_engine.py -- this module re-exports
+them for backwards compatibility with existing imports.
 """
 
 import asyncio
@@ -12,50 +16,24 @@ import queue
 import threading
 import time
 from collections.abc import AsyncGenerator, Callable
-from dataclasses import dataclass
-from typing import Protocol
 
 import numpy as np
 from pocket_tts import TTSModel
+from wyoming.info import Attribution
+
+from app.tts import get_tts_model_info
+from app.tts_engine import TtsSynthesisStats, TtsSynthesizer
+
+__all__ = ["TtsSynthesisStats", "TtsSynthesizer", "PocketTtsSynthesizer"]
 
 _LOGGER = logging.getLogger(__name__)
 
+ENGINE_ID = "pocket_tts"
 
-@dataclass
-class TtsSynthesisStats:
-    """Per-request timing breakdown, populated by synthesize_stream() as it
-    runs (see its docstring). A fresh instance per request -- not shared or
-    reused across calls, and safe to read only after the request has
-    finished (normally or with an error), since the values are written
-    incrementally from a background thread while the request is in flight.
-
-    Only the synthesizer itself can distinguish real model compute time
-    from time spent waiting for the shared lock: both are opaque to
-    app/handler.py, which measures the outer request wall-time and its own
-    Wyoming I/O time instead (see app/handler.py's _SynthesisStats).
-    """
-
-    lock_wait_seconds: float = 0.0
-    model_generation_seconds: float = 0.0
-
-
-class TtsSynthesizer(Protocol):
-    """Structural interface app/handler.py depends on for TTS.
-
-    Lets tests substitute a lightweight fake without subclassing the real
-    PocketTtsSynthesizer (which requires a real/mocked TTSModel).
-    """
-
-    @property
-    def sample_rate(self) -> int: ...
-
-    @property
-    def default_voice(self) -> str: ...
-
-    def synthesize_stream(
-        self, text: str, voice: str | None = None, stats: TtsSynthesisStats | None = None
-    ) -> AsyncGenerator[np.ndarray, None]: ...
-
+ATTRIBUTION = Attribution(
+    name="Kyutai",
+    url="https://github.com/kyutai-labs/pocket-tts",
+)
 
 # How long to wait for the producer thread to notice cancellation and exit
 # after a consumer stops iterating early (client disconnect mid-synthesis,
@@ -90,15 +68,21 @@ class PocketTtsSynthesizer:
         model: TTSModel,
         default_voice: str,
         lock: asyncio.Lock | None = None,
+        model_name: str = "",
     ) -> None:
         self._model = model
         self._default_voice = default_voice
         self._lock = lock if lock is not None else asyncio.Lock()
+        self._model_name = model_name
         # get_state_for_audio_prompt() is documented upstream as "relatively
         # slow" -- cache resolved voice states by name so repeated requests
         # for the same voice (the common case: one configured default voice)
         # don't pay that cost every time.
         self._voice_state_cache: dict[str, object] = {}
+
+    @property
+    def engine_id(self) -> str:
+        return ENGINE_ID
 
     @property
     def sample_rate(self) -> int:
@@ -107,6 +91,24 @@ class PocketTtsSynthesizer:
     @property
     def default_voice(self) -> str:
         return self._default_voice
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    @property
+    def program_name(self) -> str:
+        return "homeintent-pocket-tts"
+
+    @property
+    def attribution(self) -> Attribution:
+        return ATTRIBUTION
+
+    @property
+    def description(self) -> str:
+        return get_tts_model_info(self._model_name).get(
+            "description", "HomeIntent Pocket TTS - German streaming TTS"
+        )
 
     async def _resolve_voice_state(self, voice: str) -> object:
         cached = self._voice_state_cache.get(voice)

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0] - 2026-09-18
+
+Adds Kokoro German ONNX as a second, user-selectable local TTS engine
+(voice "Martin", ONNX Runtime, CPU-only) alongside the existing Pocket
+TTS. Integrated directly in-process (no second server/container). Default
+engine remains `pocket_tts` for full backward compatibility with existing
+installs; select `tts_engine: kokoro_onnx` to try the new engine. The
+Kokoro model (~326MB, Apache-2.0) is downloaded on demand into persistent
+storage only when selected, never baked into the image.
+
+See `homeintent-moonshine-stt/CHANGELOG.md` and `ABSCHLUSSBERICHT_V0.3.0.md` for full details.
+
 ## [0.2.7] - 2026-09-18
 
 Real Wyoming TTS audio streaming to Home Assistant: the add-on now
