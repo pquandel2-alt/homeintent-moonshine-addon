@@ -3,9 +3,9 @@ name: HomeIntent Moonshine Voice
 # Slug intentionally left as "homeintent-moonshine-stt" (its v0.1.x value) so
 # existing installations upgrade in place rather than appearing as a brand
 # new add-on -- see ABSCHLUSSBERICHT_V0.2.0.md's "Add-on name / slug" section.
-version: 0.3.0
+version: 0.4.0
 slug: homeintent-moonshine-stt
-description: Local German speech-to-text (Moonshine) and text-to-speech (Kyutai Pocket TTS or Kokoro ONNX) over Wyoming
+description: Local German speech-to-text (Moonshine or Kroko) and text-to-speech (Kyutai Pocket TTS, Kokoro ONNX, or Supertonic 3) over Wyoming
 url: https://github.com/pquandel2-alt/homeintent-moonshine-addon
 arch:
   - amd64
@@ -26,6 +26,11 @@ backup_exclude:
 homeassistant_api: true
 options:
   stt_enabled: true
+  # MUST default to moonshine: an existing installation's persisted
+  # options.json predates this option entirely. See app/__main__.py's
+  # --stt-engine argument and rootfs's run script for the two independent
+  # fallback paths that both resolve a missing/null value to "moonshine".
+  stt_engine: moonshine
   model: small
   language: de
   log_level: INFO
@@ -40,6 +45,9 @@ options:
   decode_incomplete_lines: true
   save_debug_audio: false
   debug_audio_max_files: 100
+  # Kroko options -- ignored when stt_engine is moonshine.
+  kroko_threads: 1
+  kroko_hotwords_score: 1.5
   # TTS defaults to OFF on upgrade: an existing pure-STT installation must
   # not suddenly download an extra PyTorch + Pocket TTS model (several
   # hundred MB) and grow its startup time. New installations are documented
@@ -63,8 +71,14 @@ options:
   kokoro_threads: 0
   kokoro_sentence_pause: 0.25
   kokoro_clause_pause: 0.1
+  # Supertonic 3 options -- ignored unless tts_engine is supertonic_3.
+  supertonic_voice: M1
+  supertonic_speed: 1.0
+  supertonic_steps: 8
+  supertonic_threads: 1
 schema:
   stt_enabled: bool
+  stt_engine: list(moonshine|kroko)
   model: list(tiny|small)
   language: list(de)
   log_level: list(DEBUG|INFO|WARNING|ERROR)
@@ -79,8 +93,10 @@ schema:
   decode_incomplete_lines: bool
   save_debug_audio: bool
   debug_audio_max_files: int(1,10000)
+  kroko_threads: int(1,64)
+  kroko_hotwords_score: float(0.0,10.0)
   tts_enabled: bool
-  tts_engine: list(pocket_tts|kokoro_onnx)
+  tts_engine: list(pocket_tts|kokoro_onnx|supertonic_3)
   tts_model: list(german|german_24l)
   tts_voice: str
   tts_log_performance: bool
@@ -91,4 +107,8 @@ schema:
   kokoro_threads: int(0,64)
   kokoro_sentence_pause: float(0.0,2.0)
   kokoro_clause_pause: float(0.0,2.0)
+  supertonic_voice: str
+  supertonic_speed: float(0.25,3.0)
+  supertonic_steps: int(2,32)
+  supertonic_threads: int(1,64)
 homeassistant: "2023.11.0"

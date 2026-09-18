@@ -1,5 +1,80 @@
 # Changelog - HomeIntent Moonshine Voice Add-on
 
+## [0.4.0] - 2026-09-18
+
+Adds a second, user-selectable STT engine (**Kroko**, via sherpa-onnx) and a
+third TTS engine (**Supertonic 3**, via sherpa-onnx), both real, in-process,
+streaming implementations behind a new generic `SttEngine`/`SttSession`
+abstraction that mirrors the existing `TtsSynthesizer` abstraction's design.
+Moonshine, Pocket TTS, and Kokoro ONNX are unchanged and remain the
+defaults; upgrading requires no action.
+
+### Added
+- **STT engine abstraction** (`app/stt_engine.py`): a generic
+  `SttEngine`/`SttSession` interface (`engine_id`, `capabilities`,
+  `program_name`, `create_session()`, `set_keyterms()`) that
+  `app/handler.py` depends on instead of a concrete Moonshine
+  `Transcriber` -- adding a future engine (Speechcatcher, Vosk) is now
+  one more implementation of this interface, not a new branch in the
+  handler.
+- **Moonshine adapter** (`app/moonshine_engine.py`): wraps the existing,
+  unmodified `app/models.py`/`app/streaming.py`/`app/keyterms.py` behind
+  the new interface with zero behavioral change -- model choice, keyterm
+  boosting, VAD, `decode_incomplete_lines`, and performance counters all
+  work exactly as before. `app/handler.py`'s `transcriber=` constructor
+  parameter is kept for backward compatibility with existing callers/tests.
+- **New STT engine: Kroko** (`app/kroko_engine.py`, `app/kroko_model.py`),
+  a German streaming Zipformer2-transducer model (Banafo AI's
+  [Kroko-ASR](https://huggingface.co/Banafo/Kroko-ASR), Apache-2.0,
+  merged into sherpa-onnx upstream) run in-process via
+  `sherpa_onnx.OnlineRecognizer.from_transducer()` -- real incremental
+  streaming (`accept_waveform()` per Wyoming audio-chunk), with dynamic
+  HA-vocabulary/keyterm biasing via sherpa-onnx's own per-stream hotwords
+  (`modified_beam_search` decoding). Selected via the new `stt_engine:
+  kroko` option; default remains `moonshine`. Model downloaded to
+  `/data/models/kroko/` only when selected, from sherpa-onnx's own GitHub
+  Release (`sherpa-onnx-streaming-zipformer-de-kroko-2025-08-06.tar.bz2`).
+- **New Kroko options**: `kroko_threads` (default `1`),
+  `kroko_hotwords_score` (default `1.5`).
+- **New TTS engine: Supertonic 3** (`app/supertonic_tts.py`,
+  `app/supertonic_session.py`), Supertone Inc.'s multilingual
+  ([supertone-inc/supertonic](https://github.com/supertone-inc/supertonic),
+  MIT-licensed) TTS system, run in-process via sherpa-onnx's INT8-quantized
+  export and its real native callback-streaming `generate()` API --
+  chunks are forwarded to the existing Wyoming AudioChunk pipeline exactly
+  like Pocket TTS/Kokoro, with no WAV round-trip. 10 built-in voices
+  (`M1`-`M5`/`F1`-`F5`); default `M1`. Selected via the new `tts_engine:
+  supertonic_3` option; default remains `pocket_tts`. Model downloaded to
+  `/data/models/supertonic/` only when `tts_enabled: true` AND
+  `tts_engine: supertonic_3`.
+- **New Supertonic options**: `supertonic_voice` (default `M1`),
+  `supertonic_speed`, `supertonic_steps` (default `8`),
+  `supertonic_threads` (default `1`).
+- **New runtime dependency**: `sherpa-onnx==1.13.8` (Apache-2.0), verified
+  to ship manylinux (amd64) and aarch64 wheels for Python 3.11, and to
+  bundle its own statically-linked ONNX Runtime build with no Python-level
+  `onnxruntime` dependency -- does not conflict with the
+  `onnxruntime==1.30.0` pin already used by Kokoro ONNX.
+- **Native Home Assistant translations** (`translations/en.yaml`,
+  `translations/de.yaml`): every visible config option now has a proper
+  display name and description in both languages, following the real
+  add-on translation structure (`configuration: <key>: {name,
+  description}`), instead of relying on `config.yaml`'s own raw option
+  names. The flat `config.yaml` schema itself is unchanged (no new,
+  currently-undocumented schema keywords were introduced) for full
+  upgrade compatibility.
+- Both `app/kroko_model.py`/`app/supertonic_tts.py` only ever load their
+  respective model when their engine is actually selected -- selecting
+  `moonshine`/`pocket_tts` (the defaults) never touches Kroko or
+  Supertonic code at all, verified by dedicated dispatch tests.
+
+### Changed
+- `app/handler.py` now takes an optional `stt_engine=` constructor
+  parameter (used for Kroko); the previous `transcriber=` parameter still
+  works unchanged for Moonshine and every existing caller/test.
+- Version bumped to 0.4.0 across `config.yaml`, `app/pyproject.toml`, and
+  `app/__main__.py`'s `VERSION`.
+
 ## [0.3.0] - 2026-09-18
 
 Adds **Kokoro German ONNX** as a second, user-selectable local TTS engine

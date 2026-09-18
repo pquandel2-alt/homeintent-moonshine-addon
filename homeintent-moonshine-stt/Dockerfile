@@ -69,6 +69,15 @@ COPY rootfs /
 ENV MOONSHINE_VOICE_CACHE=/data/models
 ENV HF_HOME=/data/models/pocket-tts
 ENV KOKORO_ONNX_CACHE=/data/models/kokoro-onnx
+# KROKO_CACHE: app/kroko_model.py's own model cache, only ever populated
+# when stt_engine=kroko. SUPERTONIC_CACHE: app/supertonic_tts.py's own
+# model cache, only ever populated when tts_enabled=true and
+# tts_engine=supertonic_3. Both are separate subdirectories under /data/
+# models for the same reasons as Pocket TTS/Kokoro above (independent
+# inspection/clearing; already covered by config.yaml's
+# backup_exclude: ["models/*"]).
+ENV KROKO_CACHE=/data/models/kroko
+ENV SUPERTONIC_CACHE=/data/models/supertonic
 
 # Health check: real Wyoming describe round-trip, not a raw-byte grep (see
 # app/healthcheck.py). start-period raised from 60s: a first-run Pocket TTS

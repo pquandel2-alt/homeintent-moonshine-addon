@@ -28,12 +28,34 @@ over one Wyoming service.
 
 ### STT
 
-- **stt_enabled** (default `true`): enable Moonshine speech-to-text.
+Two STT engines are available, selected via **stt_engine**:
+
+| Engine | Value | Streaming | Hotwords/HA vocabulary |
+|--------|-------|-----------|--------------------------|
+| Moonshine (default) | `moonshine` | yes | yes |
+| Kroko | `kroko` | yes | yes (sherpa-onnx hotwords) |
+
+Speechcatcher/Vosk German engines are planned but not yet available.
+
+- **stt_enabled** (default `true`): enable speech-to-text.
+- **stt_engine** (default `moonshine`): `moonshine` or `kroko`. **Must stay
+  `moonshine` on upgrade** unless you explicitly opt in.
 - **model**: `tiny` (34M, faster, ~12% WER) or `small` (123M, ~7.5% WER, recommended).
+  Ignored for `stt_engine: kroko`.
 - **language**: `de` (German only).
 - **log_level**: `DEBUG`/`INFO`/`WARNING`/`ERROR`.
+- **kroko_threads** (default `1`), **kroko_hotwords_score** (default `1.5`):
+  sherpa-onnx tuning for the Kroko engine, ignored for `stt_engine: moonshine`.
 
 ### TTS
+
+Three TTS engines are available, selected via **tts_engine**:
+
+| Engine | Value | Voices | Streaming |
+|--------|-------|--------|-----------|
+| Pocket TTS (default) | `pocket_tts` | 1 (`juergen`) | yes |
+| Kokoro ONNX | `kokoro_onnx` | 1 (`martin`) | yes |
+| Supertonic 3 | `supertonic_3` | 10 (`M1`-`M5`, `F1`-`F5`) | yes (native callback, via sherpa-onnx) |
 
 - **tts_enabled** (default `false`): enable text-to-speech. Off by default on
   upgrade so an existing STT-only install doesn't suddenly download an extra runtime
@@ -60,6 +82,13 @@ over one Wyoming service.
 - **kokoro_sentence_pause** / **kokoro_clause_pause** (defaults `0.25`/`0.1`
   seconds): Kokoro's own real upstream defaults for the pause inserted after a
   sentence/clause.
+- **supertonic_voice** (default `M1`): one of 10 built-in voices, `M1`-`M5`
+  (male) or `F1`-`F5` (female); a numeric sid `0`-`9` also works. Ignored
+  unless `tts_engine: supertonic_3`.
+- **supertonic_speed** (default `1.0`, range `0.25`-`3.0`).
+- **supertonic_steps** (default `8`): denoising steps; `8` is Supertonic's
+  own documented default, `10` its documented higher-quality alternative.
+- **supertonic_threads** (default `1`): sherpa-onnx CPU threads.
 - **tts_warmup** (default `true`): runs one discarded synthesis at startup so the
   first real request isn't slower than later ones. Pure performance optimization
   (a failure here is logged but never fails startup). Applies to whichever engine
@@ -238,3 +267,7 @@ This add-on's code, and Pocket TTS's own code, are licensed under the MIT Licens
   README) — the exact Hugging Face license field could not be verified during this
   add-on's development (huggingface.co was unreachable from the development
   environment); review it yourself before commercial use.
+- Kroko German STT model weights: Apache License 2.0 (Banafo AI's
+  Kroko-ASR, via sherpa-onnx).
+- Supertonic 3 TTS model weights: MIT License (Supertone Inc.).
+- `sherpa-onnx` itself (runtime for Kroko + Supertonic 3): Apache-2.0.

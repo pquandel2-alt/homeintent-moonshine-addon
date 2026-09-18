@@ -1,0 +1,141 @@
+configuration:
+  stt_enabled:
+    name: Spracherkennung aktivieren
+    description: Schaltet die Spracherkennung ein oder aus. Die verwendete Engine wird unten unter "STT-Engine" gewählt.
+  stt_engine:
+    name: STT-Engine
+    description: >-
+      Welche Spracherkennungs-Engine verwendet wird. "moonshine" (Standard) ist die
+      bisherige Moonshine-Engine dieses Add-ons -- bei einem Update wird sie automatisch
+      weiterverwendet. "kroko" ist eine neuere, streamingfähige deutsche Engine
+      (Banafo/Kroko über sherpa-onnx); ihr Modell wird beim ersten Auswählen heruntergeladen.
+      Speechcatcher und Vosk sind geplant, aber noch nicht verfügbar.
+  model:
+    name: Moonshine-Modell
+    description: >-
+      Nur relevant bei STT-Engine "moonshine". "small" ist genauer, "tiny" ist schneller und
+      benötigt weniger CPU/RAM.
+  language:
+    name: Sprache
+    description: Sprache für Erkennung/Sprachausgabe. Aktuell wird nur Deutsch ("de") unterstützt.
+  log_level:
+    name: Log-Level
+    description: Wie detailliert ins Add-on-Log geschrieben wird. Für den Normalbetrieb wird "INFO" empfohlen.
+  log_transcripts:
+    name: Erkannten Text loggen
+    description: >-
+      Wenn aktiv, wird der tatsächlich erkannte Satz mit Log-Level INFO geschrieben.
+      Standardmäßig aus, da erkannte Sprache datenschutzrelevant sein kann.
+  log_performance:
+    name: STT-Performance loggen
+    description: Protokolliert pro erkannter Äußerung eine kompakte Zeit-/Echtzeitfaktor-Zeile.
+  extra_keyterms:
+    name: Zusätzliche Schlüsselbegriffe
+    description: >-
+      Kommagetrennte Liste zusätzlicher Wörter/Phrasen, die bei der Erkennung bevorzugt
+      werden sollen (z. B. Geräte- oder Raumnamen, die Home Assistant noch nicht kennt).
+  keyterm_boost:
+    name: Stärke der Schlüsselbegriff-Gewichtung
+    description: >-
+      Nur relevant bei STT-Engine "moonshine". Wie stark die obigen Schlüsselbegriffe und das
+      Home-Assistant-Vokabular bei der Erkennung bevorzugt werden.
+  use_ha_vocabulary:
+    name: Home-Assistant-Vokabular verwenden
+    description: >-
+      Liest Bereichs-, Geräte- und Entitätsnamen (nur lesend) aus Home Assistant und fügt sie
+      als Schlüsselbegriffe hinzu, damit eigene Raum-/Gerätenamen zuverlässiger erkannt werden.
+  ha_vocabulary_refresh_minutes:
+    name: Aktualisierungsintervall HA-Vokabular (Minuten)
+    description: Wie oft das Home-Assistant-Vokabular oben neu eingelesen wird. 0 deaktiviert die periodische Aktualisierung.
+  transcription_interval:
+    name: Transkriptionsintervall (Sekunden)
+    description: >-
+      Nur relevant bei STT-Engine "moonshine". Wie oft die Streaming-Erkennung das Audio
+      während des Sprechens erneut prüft. Erweiterte Einstellung; der Standardwert wird empfohlen.
+  vad_threshold:
+    name: Schwellwert für Sprachaktivitätserkennung
+    description: >-
+      Nur relevant bei STT-Engine "moonshine". Wie empfindlich Stille/Sprache erkannt wird.
+      Erweiterte Einstellung; der Standardwert wird empfohlen.
+  decode_incomplete_lines:
+    name: Unvollständige Zeilen dekodieren
+    description: >-
+      Nur relevant bei STT-Engine "moonshine". Erweiterte Einstellung; der Standardwert wird empfohlen.
+  save_debug_audio:
+    name: Debug-Audio speichern
+    description: >-
+      Speichert eine Kopie der empfangenen Audiodaten (samt Transkript) zur Fehlersuche auf
+      der Festplatte. Standardmäßig aus; nur vorübergehend für die Diagnose aktivieren.
+  debug_audio_max_files:
+    name: Maximale Anzahl Debug-Audiodateien
+    description: >-
+      Nur relevant, wenn "Debug-Audio speichern" aktiv ist. Älteste Aufnahmen über dieser
+      Anzahl hinaus werden automatisch gelöscht.
+  kroko_threads:
+    name: Kroko-CPU-Threads
+    description: Nur relevant bei STT-Engine "kroko". Anzahl der CPU-Threads, die sherpa-onnx für die Erkennung verwendet.
+  kroko_hotwords_score:
+    name: Stärke der Kroko-Schlüsselbegriff-Gewichtung
+    description: >-
+      Nur relevant bei STT-Engine "kroko". Wie stark die obigen Schlüsselbegriffe/das
+      Home-Assistant-Vokabular bevorzugt werden (sherpa-onnx-eigene Hotwords-Gewichtung).
+  tts_enabled:
+    name: Sprachausgabe aktivieren
+    description: >-
+      Schaltet die Sprachausgabe (Talk-back) ein oder aus. Standardmäßig aus, damit ein
+      Update nicht plötzlich ein großes Stimmmodell herunterlädt.
+  tts_engine:
+    name: TTS-Engine
+    description: >-
+      Welche Sprachausgabe-Engine verwendet wird. "pocket_tts" (Standard) ist die bisherige
+      Kyutai-Pocket-TTS-Engine -- bei einem Update wird sie automatisch weiterverwendet.
+      "kokoro_onnx" ist die deutsche Stimme "Martin". "supertonic_3" ist Supertones
+      mehrsprachige Supertonic-3-Engine mit 10 wählbaren Stimmen.
+  tts_model:
+    name: Pocket-TTS-Stimmmodell
+    description: Nur relevant bei TTS-Engine "pocket_tts".
+  tts_voice:
+    name: Pocket-TTS-Stimme
+    description: Nur relevant bei TTS-Engine "pocket_tts". Name der zu verwendenden Pocket-TTS-Stimme.
+  tts_log_performance:
+    name: TTS-Performance loggen
+    description: Protokolliert pro Sprachausgabe eine kompakte Zeit-/Echtzeitfaktor-Zeile.
+  tts_warmup:
+    name: TTS beim Start aufwärmen
+    description: Führt direkt nach dem Start eine verworfene Testsynthese aus, damit die erste echte Antwort nicht ungewöhnlich langsam ist.
+  tts_threads:
+    name: Pocket-TTS-CPU-Threads
+    description: Nur relevant bei TTS-Engine "pocket_tts". 0 belässt PyTorchs eigenen Standardwert unverändert.
+  kokoro_voice:
+    name: Kokoro-Stimme
+    description: Nur relevant bei TTS-Engine "kokoro_onnx". Aktuell ist nur "martin" (Deutsch) verfügbar.
+  kokoro_speed:
+    name: Kokoro-Sprechgeschwindigkeit
+    description: Nur relevant bei TTS-Engine "kokoro_onnx". 1.0 ist normale Geschwindigkeit, höher ist schneller.
+  kokoro_threads:
+    name: Kokoro-CPU-Threads
+    description: Nur relevant bei TTS-Engine "kokoro_onnx". 0 belässt ONNX Runtimes eigenen Standardwert unverändert.
+  kokoro_sentence_pause:
+    name: Kokoro-Pause nach Satz (Sekunden)
+    description: Nur relevant bei TTS-Engine "kokoro_onnx".
+  kokoro_clause_pause:
+    name: Kokoro-Pause nach Teilsatz (Sekunden)
+    description: Nur relevant bei TTS-Engine "kokoro_onnx".
+  supertonic_voice:
+    name: Supertonic-Stimme
+    description: >-
+      Nur relevant bei TTS-Engine "supertonic_3". Eine der 10 eingebauten Stimmen: M1-M5
+      (männlich) oder F1-F5 (weiblich). Standard ist "M1".
+  supertonic_speed:
+    name: Supertonic-Sprechgeschwindigkeit
+    description: Nur relevant bei TTS-Engine "supertonic_3". 1.0 ist normale Geschwindigkeit, höher ist schneller.
+  supertonic_steps:
+    name: Supertonic-Qualitätsstufen
+    description: >-
+      Nur relevant bei TTS-Engine "supertonic_3". Anzahl der Entrauschungsschritte. 8
+      (Standard) ist Supertonics eigene dokumentierte ausgewogene Einstellung, 10 die
+      dokumentierte Alternative mit höherer Qualität (langsamer). Höhere Werte sind langsamer,
+      aber nicht offiziell dokumentiert.
+  supertonic_threads:
+    name: Supertonic-CPU-Threads
+    description: Nur relevant bei TTS-Engine "supertonic_3". Anzahl der CPU-Threads, die sherpa-onnx für die Synthese verwendet.

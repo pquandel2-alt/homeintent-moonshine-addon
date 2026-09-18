@@ -93,8 +93,9 @@ The add-on is configured via Home Assistant's UI:
 
 | Option | Values | Default | Description |
 |--------|--------|---------|-------------|
-| **stt_enabled** | `true`/`false` | `true` | Enable Moonshine speech-to-text |
-| **model** | `tiny`, `small` | `small` | STT model size. Tiny = faster but less accurate, Small = better accuracy (recommended) |
+| **stt_enabled** | `true`/`false` | `true` | Enable speech-to-text (engine selected via `stt_engine`) |
+| **stt_engine** | `moonshine`, `kroko` | `moonshine` | Which STT engine to use. **Must stay `moonshine` on upgrade** unless you explicitly opt in — see [STT Engines](#stt-engines) |
+| **model** | `tiny`, `small` | `small` | Moonshine model size. Tiny = faster but less accurate, Small = better accuracy (recommended). Ignored for `stt_engine: kroko` |
 | **language** | `de` | `de` | Language (German only) |
 | **log_level** | `DEBUG`, `INFO`, `WARNING`, `ERROR` | `INFO` | Logging verbosity |
 | **log_transcripts** | `true`/`false` | `false` | Log recognized text. **Off by default** — enable only if you need to debug what was actually recognized |
@@ -108,29 +109,57 @@ The add-on is configured via Home Assistant's UI:
 | **decode_incomplete_lines** | `true`/`false` | `true` | Whether to decode and emit lines that haven't finished yet, for lower-latency partial results |
 | **save_debug_audio** | `true`/`false` | `false` | Save received audio to `/data/debug_audio` as WAV + JSON metadata for troubleshooting. **Off by default** — see [Privacy](#privacy) |
 | **debug_audio_max_files** | `1`–`10000` | `100` | Oldest-first retention limit for saved debug audio files |
+| **kroko_threads** | `1`–`64` | `1` | sherpa-onnx CPU threads for Kroko. Ignored for `stt_engine: moonshine` |
+| **kroko_hotwords_score** | `0.0`–`10.0` | `1.5` | sherpa-onnx's own hotwords-scoring strength for Kroko keyterm/HA-vocabulary biasing. Ignored for `stt_engine: moonshine` |
 
-### TTS Options
+### STT Engines
 
-Two TTS engines are available, selected with **tts_engine**:
+**Two** STT engines are available, selected with **stt_engine**:
 
-- **Pocket TTS** (`pocket_tts`, the default): [Kyutai's Pocket TTS](https://github.com/kyutai-labs/pocket-tts),
-  PyTorch-based, voice **juergen**. Kept as the default for full backward
-  compatibility — an existing installation's behavior never changes on
-  upgrade.
-- **Kokoro ONNX** (`kokoro_onnx`): a German fine-tune of
-  [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) running on
-  [ONNX Runtime](https://onnxruntime.ai/) instead of PyTorch, voice
-  **Martin**. No GPU needed (same as Pocket TTS). Added in v0.3.0
-  specifically to try for lower CPU time-to-first-audio than Pocket TTS —
-  see [Performance](#performance) for what has actually been measured on
-  this add-on's own target hardware, and benchmark both yourself with
-  `python -m app.tts_benchmark --engine pocket_tts` /
-  `--engine kokoro_onnx` before switching a production setup.
+| Engine | `stt_engine` value | Runtime | Streaming | Hotwords/HA vocabulary | Notes |
+|--------|--------------------|---------|-----------|-------------------------|-------|
+| **Moonshine** (default) | `moonshine` | native (moonshine-voice) | yes | yes (`set_keyterms`) | Unchanged since v0.1 — kept as default for full backward compatibility |
+| **Kroko** | `kroko` | sherpa-onnx (ONNX Runtime) | yes | yes (sherpa-onnx hotwords, `modified_beam_search`) | German streaming Zipformer2-transducer ([Banafo/Kroko-ASR](https://huggingface.co/Banafo/Kroko-ASR)), added in v0.4.0 |
+
+Speechcatcher and Vosk German engines are **planned but not available yet**.
+
+Selecting `stt_engine: kroko` downloads its model (from sherpa-onnx's own
+GitHub Release, `sherpa-onnx-streaming-zipformer-de-kroko-2025-08-06.tar.bz2`,
+Apache-2.0 licensed) to `/data/models/kroko/` the first time it's used, and
+only Kroko's model is loaded when it's selected — Moonshine's model is never
+loaded at the same time, and vice versa.
+
+### TTS Engines
+
+**Three** TTS engines are available, selected with **tts_engine**:
+
+| Engine | `tts_engine` value | Runtime | Voices | Streaming | Notes |
+|--------|---------------------|---------|--------|-----------|-------|
+| **Pocket TTS** (default) | `pocket_tts` | PyTorch | 1 (`juergen`) | yes | [Kyutai's Pocket TTS](https://github.com/kyutai-labs/pocket-tts). Kept as default for full backward compatibility |
+| **Kokoro ONNX** | `kokoro_onnx` | ONNX Runtime | 1 (`martin`) | yes | German fine-tune of [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M). Added in v0.3.0 |
+| **Supertonic 3** | `supertonic_3` | sherpa-onnx (ONNX Runtime, int8) | 10 (`M1`-`M5`, `F1`-`F5`) | yes (native callback) | [Supertone's Supertonic 3](https://github.com/supertone-inc/supertonic), multilingual (31 languages incl. German). Added in v0.4.0 |
+
+Benchmark any engine's thread setting on your own hardware with
+`python -m app.tts_benchmark --engine pocket_tts` /
+`--engine kokoro_onnx` before switching a production setup (Supertonic 3 is
+not yet wired into `tts_benchmark.py`).
+
+Selecting `tts_engine: supertonic_3` downloads its model (from sherpa-onnx's
+own GitHub Release, `sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2`,
+MIT licensed per [supertone-inc/supertonic](https://github.com/supertone-inc/supertonic))
+to `/data/models/supertonic/` the first time it's used. Its 10 voices are
+named `M1`-`M5` (male) and `F1`-`F5` (female) — `supertonic_voice` accepts
+either the name or the numeric sid (0-9) sherpa-onnx itself uses; the sid
+mapping (`F1`=0 ... `F5`=4, `M1`=5 ... `M5`=9) was derived from
+sherpa-onnx's own model-export script (alphabetical merge of the standard
+voice-style filenames), not read out of the binary voice file directly — see
+`app/supertonic_tts.py`'s module docstring for the full reasoning. Default
+voice is `M1` (a male voice, matching upstream's own example default).
 
 | Option | Values | Default | Description |
 |--------|--------|---------|-------------|
 | **tts_enabled** | `true`/`false` | `false` | Enable text-to-speech (engine selected via `tts_engine`). Off by default on upgrade — see [Backward compatibility](#backward-compatibility) |
-| **tts_engine** | `pocket_tts`, `kokoro_onnx` | `pocket_tts` | Which TTS engine to use. **Must stay `pocket_tts` on upgrade** unless you explicitly opt in — see above |
+| **tts_engine** | `pocket_tts`, `kokoro_onnx`, `supertonic_3` | `pocket_tts` | Which TTS engine to use. **Must stay `pocket_tts` on upgrade** unless you explicitly opt in — see above |
 | **tts_model** | `german`, `german_24l` | `german` | Pocket TTS model: `german` (6 transformer layers) is faster and is the default; `german_24l` (24 layers) is higher quality but slower. Ignored for `tts_engine: kokoro_onnx` |
 | **tts_voice** | voice name or `hf://...` path | `juergen` | Pocket TTS voice. `juergen` is the only real German preset voice Pocket TTS ships. Ignored for `tts_engine: kokoro_onnx` (see `kokoro_voice`) |
 | **tts_log_performance** | `true`/`false` | `true` | Log a compact per-request timing breakdown (`engine=`, TTFA, lock-wait, model compute, Wyoming-send, wall time, model RTF, wall RTF). Never includes the synthesized text |
@@ -141,6 +170,10 @@ Two TTS engines are available, selected with **tts_engine**:
 | **kokoro_threads** | `0`–`64` | `0` | ONNX Runtime intra-op CPU threads (`0` = onnxruntime's own default) |
 | **kokoro_sentence_pause** | seconds | `0.25` | Pause after a sentence (kokoro-onnx's own default) |
 | **kokoro_clause_pause** | seconds | `0.1` | Pause after a clause (kokoro-onnx's own default) |
+| **supertonic_voice** | `M1`-`M5`, `F1`-`F5`, or sid `0`-`9` | `M1` | Supertonic 3 voice. Ignored unless `tts_engine: supertonic_3` |
+| **supertonic_speed** | `0.25`–`3.0` | `1.0` | Supertonic 3 speech speed |
+| **supertonic_steps** | `2`–`32` | `8` | Supertonic 3 denoising steps. `8` is upstream's own documented default/balanced setting, `10` its documented higher-quality alternative |
+| **supertonic_threads** | `1`–`64` | `1` | sherpa-onnx CPU threads for Supertonic 3 |
 
 Picking an unsupported combination (e.g. a Pocket voice name while
 `tts_engine: kokoro_onnx` is selected) can't happen: each engine only ever
@@ -434,7 +467,8 @@ mypy --config-file app/pyproject.toml app/
 
 This add-on's code is licensed under the MIT License — see [LICENSE](LICENSE). Pocket
 TTS's own code is also MIT licensed. Kokoro ONNX's own runtime code
-(`kokoro-onnx`) is also MIT licensed.
+(`kokoro-onnx`) is also MIT licensed. `sherpa-onnx` (used for Kroko STT and
+Supertonic 3 TTS) is Apache-2.0 licensed.
 
 **Model weights are NOT all MIT licensed, and differ between STT and TTS:**
 
@@ -457,6 +491,12 @@ TTS's own code is also MIT licensed. Kokoro ONNX's own runtime code
   repository at the time this add-on was built, so `main` is used by
   default; see `ABSCHLUSSBERICHT_V0.3.0.md` and the `kokoro_model_revision`
   advanced setting if a stable tag is published later.
+- **Kroko German STT model weights**: Apache License 2.0 (Banafo AI's
+  Kroko-ASR, merged into sherpa-onnx upstream — see
+  [Banafo/Kroko-ASR](https://huggingface.co/Banafo/Kroko-ASR)).
+- **Supertonic 3 TTS model weights**: MIT License (verified directly from
+  [supertone-inc/supertonic](https://github.com/supertone-inc/supertonic)'s
+  own `LICENSE` file).
 
 ## Contributing
 
@@ -472,6 +512,9 @@ Issues and pull requests are welcome! Please ensure:
 - **Kokoro ONNX runtime**: https://github.com/thewh1teagle/kokoro-onnx
 - **Kokoro-82M / German "Martin" fine-tune**: https://huggingface.co/hexgrad/Kokoro-82M,
   https://huggingface.co/Godelaune/Kokoro-82M-ONNX-German-Martin
+- **Kroko-ASR**: https://huggingface.co/Banafo/Kroko-ASR
+- **Supertonic**: https://github.com/supertone-inc/supertonic
+- **sherpa-onnx** (runs Kroko + Supertonic 3 in-process): https://github.com/k2-fsa/sherpa-onnx
 - **Wyoming Protocol**: https://github.com/rhasspy/wyoming
 - **Home Assistant**: https://www.home-assistant.io
 

@@ -132,7 +132,7 @@ jobs:
             -v "${GITHUB_WORKSPACE}/.github/ci/fake_supervisor.py:/fake_supervisor.py:ro" \
             -v "${GITHUB_WORKSPACE}/homeintent-moonshine-stt/config.yaml:/config.yaml:ro" \
             -e CI_MODEL=tiny \
-            -e CI_OMIT_OPTIONS="log_performance,use_ha_vocabulary,ha_vocabulary_refresh_minutes,transcription_interval,decode_incomplete_lines,save_debug_audio,debug_audio_max_files,stt_enabled,tts_enabled,tts_engine,tts_model,tts_voice,tts_log_performance,tts_warmup,tts_threads,kokoro_voice,kokoro_speed,kokoro_threads,kokoro_sentence_pause,kokoro_clause_pause" \
+            -e CI_OMIT_OPTIONS="log_performance,use_ha_vocabulary,ha_vocabulary_refresh_minutes,transcription_interval,decode_incomplete_lines,save_debug_audio,debug_audio_max_files,stt_enabled,stt_engine,kroko_threads,kroko_hotwords_score,tts_enabled,tts_engine,tts_model,tts_voice,tts_log_performance,tts_warmup,tts_threads,kokoro_voice,kokoro_speed,kokoro_threads,kokoro_sentence_pause,kokoro_clause_pause,supertonic_voice,supertonic_speed,supertonic_steps,supertonic_threads" \
             -e CI_NULL_OPTIONS="keyterm_boost,vad_threshold" \
             python:3.11-slim python3 /fake_supervisor.py
 
@@ -268,6 +268,54 @@ jobs:
         run: |
           cd homeintent-moonshine-stt
           python3 -m pytest app/tests/test_e2e_kokoro_tts.py -v -m e2e -rs
+
+  e2e-kroko-stt-transcribe:
+    name: Real German Kroko STT E2E Wyoming round-trip
+    # Downloads the real sherpa-onnx Kroko German model on every run -- same
+    # gating as e2e-kokoro-tts-synthesize above, for the same reason.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
+
+      - name: Transcribe real German audio with Kroko and check the result
+        env:
+          E2E_REQUIRE_ONLINE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
+          RUN_KROKO_E2E: "1"
+        run: |
+          cd homeintent-moonshine-stt
+          python3 -m pytest app/tests/test_e2e_kroko_stt.py -v -m e2e -rs
+
+  e2e-supertonic-tts-synthesize:
+    name: Real German Supertonic 3 TTS E2E Wyoming round-trip
+    # Downloads the real sherpa-onnx Supertonic 3 int8 model on every run --
+    # same gating as e2e-kokoro-tts-synthesize above, for the same reason.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
+
+      - name: Synthesize German text with Supertonic 3 and check the audio
+        env:
+          E2E_REQUIRE_ONLINE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
+          RUN_SUPERTONIC_E2E: "1"
+        run: |
+          cd homeintent-moonshine-stt
+          python3 -m pytest app/tests/test_e2e_supertonic_tts.py -v -m e2e -rs
 
   generate-stt-fixture:
     name: Regenerate STT test audio fixture (manual only, uploads artifact)

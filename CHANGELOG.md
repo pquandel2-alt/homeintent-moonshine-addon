@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0] - 2026-09-18
+
+Adds a second, user-selectable STT engine (**Kroko**, via sherpa-onnx,
+real streaming, German, Apache-2.0 model) and a third TTS engine
+(**Supertonic 3**, via sherpa-onnx, real callback streaming, 10 voices,
+MIT-licensed model), both run in-process behind a new generic
+`SttEngine`/`SttSession` abstraction. Moonshine, Pocket TTS, and Kokoro
+ONNX are unchanged; defaults (`stt_engine: moonshine`, `tts_engine:
+pocket_tts`) are unchanged for full backward compatibility. New models are
+downloaded on demand only when explicitly selected.
+
+See `homeintent-moonshine-stt/CHANGELOG.md` for full details.
+
 ## [0.3.0] - 2026-09-18
 
 Adds Kokoro German ONNX as a second, user-selectable local TTS engine
