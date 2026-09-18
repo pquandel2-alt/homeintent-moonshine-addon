@@ -36,16 +36,13 @@ ENV PATH="/opt/venv/bin:$PATH"
 # dependency still resolvable. Installing pocket-tts afterwards then finds
 # its own "torch>=2.5.0" requirement already satisfied and never touches
 # it again.
+COPY requirements-runtime.txt /tmp/requirements-runtime.txt
 RUN pip install --no-cache-dir \
     torch \
     --index-url https://download.pytorch.org/whl/cpu \
     --extra-index-url https://pypi.org/simple \
-    && pip install --no-cache-dir \
-    moonshine-voice==0.1.5 \
-    wyoming==1.10.2 \
-    numpy==2.4.6 \
-    websockets==17.1 \
-    pocket-tts==3.1.0
+    && pip install --no-cache-dir -r /tmp/requirements-runtime.txt \
+    && rm /tmp/requirements-runtime.txt
 
 # Copy application
 WORKDIR /app

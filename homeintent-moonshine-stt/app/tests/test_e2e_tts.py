@@ -9,17 +9,17 @@ explicitly with ``pytest -m e2e``.
 
 If the network/infrastructure is genuinely unavailable (DNS/connection
 failure, HTTP error reaching Hugging Face, ...), the test is skipped with a
-clear reason. Anything else -- a broken model load, an invalid parameter,
-a changed upstream API -- is a real regression in an officially supported
-path (Pocket TTS "german" model + "juergen" voice) and must FAIL, not be
-silently hidden behind a skip (see app/tests/e2e_infra.py and item 13 of
-the v0.2.2 quality/stability task). Not run in the default CI push/PR
-pipeline (see .github/workflows/build.yml's ``e2e-tts-synthesize`` job,
-``workflow_dispatch``-gated) to avoid a real model download on every push
--- see ABSCHLUSSBERICHT_V0.2.0.md.
+clear reason -- unless ``E2E_REQUIRE_ONLINE=1`` (release-gate CI on a
+version tag), in which case any failure, infra or not, fails the test
+outright: a SKIPPED result there is not proof the real model/voice
+actually works (see app/tests/e2e_infra.py). Not run in the default CI
+push/PR pipeline (see .github/workflows/build.yml's ``e2e-tts-synthesize``
+job, gated to workflow_dispatch and version tags) to avoid a real model
+download on every push -- see ABSCHLUSSBERICHT_V0.2.0.md.
 """
 
 import asyncio
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -29,9 +29,13 @@ from wyoming.server import AsyncTcpServer
 from wyoming.tts import Synthesize
 
 from app.handler import MoonshineAsrHandler
-from app.tests.e2e_infra import is_infra_failure
+from app.tests.e2e_infra import handle_infra_or_reraise
 from app.tts import load_tts_model
 from app.tts_session import PocketTtsSynthesizer
+
+EXPECTED_SAMPLE_RATE = 24000
+EXPECTED_WIDTH = 2  # 16-bit PCM
+EXPECTED_CHANNELS = 1  # mono
 
 # Deliberately includes German-specific formatting Pocket TTS itself is
 # expected to handle without our own text normalization (B23): a time,
@@ -43,10 +47,21 @@ GERMAN_SENTENCES = (
 )
 
 
-async def _run_synthesize_round_trip(text: str, cache_dir: Path) -> bytes:
+@dataclass
+class _RoundTripResult:
+    pcm: bytes = b""
+    audio_start_count: int = 0
+    audio_chunk_count: int = 0
+    audio_stop_seen: bool = False
+    start_rates: list[int] = field(default_factory=list)
+    start_widths: list[int] = field(default_factory=list)
+    start_channels: list[int] = field(default_factory=list)
+
+
+async def _run_synthesize_round_trip(text: str, cache_dir: Path) -> _RoundTripResult:
     """Start a real Wyoming TCP server backed by a real PocketTtsSynthesizer,
-    send a synthesize request through a real AsyncTcpClient, and return the
-    concatenated raw PCM bytes of every audio-chunk received.
+    send a synthesize request through a real AsyncTcpClient, and record
+    every audio-start/-chunk/-stop event received.
     """
     tts_model = load_tts_model(model="german", cache_dir=cache_dir)
     synthesizer = PocketTtsSynthesizer(tts_model, default_voice="juergen")
@@ -67,22 +82,28 @@ async def _run_synthesize_round_trip(text: str, cache_dir: Path) -> bytes:
     assert server._server is not None
     port = server._server.sockets[0].getsockname()[1]  # type: ignore[attr-defined]
 
+    result = _RoundTripResult()
+    pcm = bytearray()
     try:
         async with AsyncTcpClient("127.0.0.1", port, read_timeout=60.0) as client:
             await client.write_event(Synthesize(text=text).event())
 
-            pcm = bytearray()
-            saw_start = False
             while True:
                 event = await client.read_event()
                 assert event is not None, "Server closed connection before sending audio-stop"
                 if AudioStart.is_type(event.type):
-                    saw_start = True
+                    start = AudioStart.from_event(event)
+                    result.audio_start_count += 1
+                    result.start_rates.append(start.rate)
+                    result.start_widths.append(start.width)
+                    result.start_channels.append(start.channels)
                 elif AudioChunk.is_type(event.type):
+                    result.audio_chunk_count += 1
                     pcm.extend(AudioChunk.from_event(event).audio)
                 elif AudioStop.is_type(event.type):
-                    assert saw_start, "audio-stop received without a prior audio-start"
-                    return bytes(pcm)
+                    result.audio_stop_seen = True
+                    result.pcm = bytes(pcm)
+                    return result
     finally:
         await server.stop()
 
@@ -92,15 +113,25 @@ async def _run_synthesize_round_trip(text: str, cache_dir: Path) -> bytes:
 @pytest.mark.parametrize("sentence", GERMAN_SENTENCES)
 async def test_german_text_round_trip_produces_valid_pcm(tmp_path: Path, sentence: str) -> None:
     try:
-        pcm_bytes = await _run_synthesize_round_trip(sentence, cache_dir=tmp_path)
+        result = await _run_synthesize_round_trip(sentence, cache_dir=tmp_path)
     except Exception as e:
-        if is_infra_failure(e):
-            pytest.skip(f"Pocket TTS model/voice unreachable ({type(e).__name__}: {e})")
-        raise  # a real regression in an officially supported path -- must fail, not skip
+        handle_infra_or_reraise(e, "Pocket TTS model/voice unreachable")
+        return  # unreachable: handle_infra_or_reraise() always skips or raises
 
+    # Exactly one audio-start per request (see app/handler.py's
+    # _stream_synthesis_chunks()/AudioStart state machine fix).
+    assert result.audio_start_count == 1, (
+        f"Expected exactly one audio-start, got {result.audio_start_count}"
+    )
+    assert result.start_rates == [EXPECTED_SAMPLE_RATE]
+    assert result.start_widths == [EXPECTED_WIDTH]
+    assert result.start_channels == [EXPECTED_CHANNELS]
+    assert result.audio_chunk_count > 0, "Expected at least one audio-chunk"
+    assert result.audio_stop_seen, "Expected an audio-stop"
+
+    pcm_bytes = result.pcm
     assert len(pcm_bytes) > 0, "Expected non-empty synthesized audio"
     assert len(pcm_bytes) % 2 == 0, "16-bit PCM must have an even byte length"
 
-    sample_rate = 24000
-    duration_s = (len(pcm_bytes) / 2) / sample_rate
+    duration_s = (len(pcm_bytes) / 2) / EXPECTED_SAMPLE_RATE
     assert 0.2 < duration_s < 30.0, f"Unexpected synthesized duration: {duration_s}s"

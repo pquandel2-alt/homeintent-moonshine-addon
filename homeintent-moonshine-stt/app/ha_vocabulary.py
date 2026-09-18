@@ -41,8 +41,8 @@ source of home-assistant/core (fetched directly from
   computes the effective exposure itself -- reliable for every registry
   entity, not just previously-cached ones.
 
-Legacy (non-registry) entities
--------------------------------
+Legacy (non-registry) entities -- deliberately CONSERVATIVE
+------------------------------------------------------------
 Home Assistant can have entities with **no entity registry entry at all**
 (``ExposedEntities.async_should_expose()`` falls back to
 ``_async_should_expose_legacy_entity()`` precisely for this case: "Settings
@@ -50,35 +50,36 @@ for entities without a unique_id are stored in the store [not the entity
 registry]", per the class's own docstring). Such entities never appear in
 ``config/entity_registry/list`` -- they only exist in the state machine
 (``get_states``). This module identifies them as ``get_states`` entity_ids
-absent from ``config/entity_registry/list``, and applies the *same*
-default-exposure rule as registry entities minus the parts that require a
-registry entry: ``_is_default_exposed(entity_id, registry_entry=None)``
-skips the ``entity_category``/``hidden_by`` check entirely (there is no
-registry entry to read them from) and resolves ``device_class`` the same
-way (``get_device_class()`` reads the live state's ``attributes.device_class``
-first) -- exactly what ``get_states`` already gives this module for every
-entity, registry or not.
+absent from ``config/entity_registry/list``.
 
-For an *explicit* override on a legacy entity, Home Assistant Core stores it
+Home Assistant Core stores a legacy entity's *explicit* exposure override
 in ``ExposedEntities.entities`` (a private, in-memory/storage-file
 structure with no dedicated bulk "read all legacy settings" WS command).
-The only read-only WS surface that reaches into it at all is
+Re-verified against the current dev branch source (2026-09-18): the only
+read-only WS surface that reaches into it at all is
 ``homeassistant/expose_entity/list``'s handler, which iterates
 ``chain(exposed_entities.entities, entity_registry.entities)`` -- i.e. it
-*does* cover legacy entities, but (like the registry case above) only
-reports entities whose ``should_expose`` has already been computed-and-
-cached as ``True`` at least once; it never reports an explicit ``False`` or
-an entity that was simply never evaluated. This is used here *only* for
-legacy entities (where it is the only signal available at all for an
-explicit override), never as an additional/overriding signal for registry
-entities (which already have a strictly better source, their own cached
-``options``). Documented limitation: a legacy entity a user explicitly
-hid from Assist, but Assist has genuinely never evaluated since, cannot be
-distinguished read-only from "never evaluated" -- Home Assistant Core
-itself provides no other read API for that. It then falls back to the same
-default-exposure rule, which is the correct, non-invented behavior for the
-"never evaluated" case and only an unavoidable edge case for the
-"explicitly hidden but never (re-)computed" case.
+*does* cover legacy entities, but only ever reports entities whose
+``should_expose`` has already been computed-and-cached as ``True`` at
+least once; it never reports an explicit ``False``, and a legacy entity
+absent from that list is indistinguishable, read-only, from one a user
+explicitly hid from Assist. No newer or alternative read-only API for this
+was found.
+
+Given that, this module does **not** claim to mirror
+``_async_should_expose_legacy_entity()``'s default-exposure fallback for
+legacy entities (an earlier version of this module did, and that was a
+real bug risk: it could have silently re-included, in the STT vocabulary,
+a legacy entity a user had explicitly removed from Assist, since a missing
+explicit override and an explicit ``False`` look identical here). Instead,
+:func:`compute_legacy_exposed_entity_ids` only ever includes a legacy
+entity when ``homeassistant/expose_entity/list`` reports a positive,
+observed exposure for it -- an ambiguous legacy entity (no observed
+signal either way) is simply left out of the automatic vocabulary, never
+guessed. This only affects which entities feed this add-on's own optional
+STT keyterm biasing; it never changes Home Assistant's own Assist
+exposure or any other HA state (see README/DOCS's documented limitation
+section).
 
 Legacy entities never contribute Area/Device combination terms (see
 :func:`_entity_area_id`): they have no registry entry, so they have no
@@ -310,39 +311,35 @@ def legacy_entity_ids(
 
 def compute_legacy_exposed_entity_ids(
     legacy_ids: set[str],
-    states: list[dict[str, Any]] | None,
-    expose_new_default: bool,
     explicitly_exposed_legacy_ids: set[str],
 ) -> set[str]:
-    """Effective Assist exposure for legacy (non-registry) entities.
+    """Effective Assist exposure for legacy (non-registry) entities --
+    deliberately CONSERVATIVE, unlike registry entities.
 
-    Mirrors ``_async_should_expose_legacy_entity()``: an explicit cached
-    ``should_expose`` (only observable read-only via
-    ``homeassistant/expose_entity/list``, see module docstring) always wins;
-    otherwise the same default-exposure rule as registry entities
-    (:func:`is_default_exposed` with no registry entry, i.e. no
-    ``entity_category``/``hidden_by`` to check) applies if
-    ``expose_new_default`` is enabled.
+    Re-verified against the current home-assistant/core dev branch source
+    (2026-09-18, same commit path as before): there is still no read-only
+    WS API that can tell an explicit ``should_expose=False`` on a legacy
+    entity apart from "never evaluated at all". The only signal available
+    at all, ``homeassistant/expose_entity/list``, only ever reports a
+    cached ``True`` (see module docstring) -- a legacy entity absent from
+    that list could equally be an entity a user explicitly hid from Assist,
+    or one nobody has ever looked at. Falling back to the same
+    default-exposure rule registry entities use (as an earlier version of
+    this module did) would risk re-including an entity the user explicitly
+    removed from Assist, purely for STT keyterm biasing -- silently
+    reversing part of what the user asked Home Assistant to do.
+
+    So: a legacy entity is only ever included here if
+    ``explicitly_exposed_legacy_ids`` (a real, positive, observed exposure
+    signal) says so. ``expose_new_default`` and device_class are
+    deliberately NOT consulted for legacy entities at all -- unlike
+    registry entities, an ambiguous legacy entity is simply left out of the
+    automatic vocabulary, never guessed either way. This does not change
+    Home Assistant's own Assist behavior in any way; it only affects which
+    entities feed this add-on's optional STT keyterm biasing (see
+    README/DOCS's documented limitation).
     """
-    device_class_by_entity_id: dict[str, str | None] = {}
-    for state in states or []:
-        entity_id = state.get("entity_id")
-        if entity_id:
-            device_class_by_entity_id[entity_id] = (state.get("attributes") or {}).get(
-                "device_class"
-            )
-
-    exposed: set[str] = set()
-    for entity_id in legacy_ids:
-        if entity_id in explicitly_exposed_legacy_ids:
-            exposed.add(entity_id)
-            continue
-        if not expose_new_default:
-            continue
-        device_class = device_class_by_entity_id.get(entity_id)
-        if is_default_exposed({"entity_id": entity_id}, device_class):
-            exposed.add(entity_id)
-    return exposed
+    return legacy_ids & explicitly_exposed_legacy_ids
 
 
 def _legacy_entity_friendly_name(entity_id: str, states: list[dict[str, Any]] | None) -> str | None:
@@ -772,12 +769,15 @@ async def _resolve_legacy_exposed_entities(
     command_id: "itertools.count[int]",
     entities: list[dict[str, Any]],
     states: list[dict[str, Any]],
-    expose_new_default: bool,
 ) -> tuple[set[str], list[dict[str, Any]]]:
     """Compute legacy (non-registry) entity exposure and their
-    pseudo-entity dicts (see module docstring). Returns (exposed_ids,
-    pseudo_entities); both empty if there are no legacy entities at all --
-    in that case ``homeassistant/expose_entity/list`` is never sent."""
+    pseudo-entity dicts (see module docstring, and
+    compute_legacy_exposed_entity_ids()'s docstring for why this is
+    deliberately conservative -- only a positive exposure signal counts,
+    ``expose_new_default`` is never consulted for legacy entities). Returns
+    (exposed_ids, pseudo_entities); both empty if there are no legacy
+    entities at all -- in that case ``homeassistant/expose_entity/list`` is
+    never sent."""
     legacy_ids = legacy_entity_ids(entities, states)
     if not legacy_ids:
         return set(), []
@@ -785,9 +785,7 @@ async def _resolve_legacy_exposed_entities(
     explicitly_exposed_legacy_ids = await _fetch_explicitly_exposed_legacy_ids(
         ws, next(command_id), legacy_ids
     )
-    exposed_ids = compute_legacy_exposed_entity_ids(
-        legacy_ids, states, expose_new_default, explicitly_exposed_legacy_ids
-    )
+    exposed_ids = compute_legacy_exposed_entity_ids(legacy_ids, explicitly_exposed_legacy_ids)
     return exposed_ids, build_legacy_pseudo_entities(exposed_ids, states)
 
 
@@ -863,7 +861,7 @@ async def fetch_ha_vocabulary(
             registry_exposed_ids = compute_exposed_entity_ids(entities, states, expose_new_default)
 
             legacy_exposed_ids, legacy_pseudo_entities = await _resolve_legacy_exposed_entities(
-                ws, command_id, entities, states, expose_new_default
+                ws, command_id, entities, states
             )
 
             exposed_entity_ids = registry_exposed_ids | legacy_exposed_ids

@@ -6,7 +6,12 @@ on:
   # Lets the real Pocket TTS e2e job (below) be run on demand from the
   # Actions UI without adding a real model download to every normal push/PR
   # -- see e2e-tts-synthesize's own `if:` condition.
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      regenerate_fixture:
+        description: "Also regenerate the STT test audio fixture (uploads a new WAV as an artifact; does not commit it)"
+        type: boolean
+        default: false
 
 jobs:
   build-amd64:
@@ -197,20 +202,28 @@ jobs:
           python-version: "3.11"
 
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
-      - run: pip install pytest pytest-asyncio numpy==2.4.6 moonshine-voice wyoming websockets==17.1 pocket-tts
+      - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
 
-      - name: Synthesize German audio, transcribe it, and check the result
+      - name: Transcribe the fixed audio fixture and check the result
+        # Release gate: on a version tag, a SKIPPED result (e.g. the
+        # Moonshine model being unreachable) must not be mistaken for proof
+        # the real model works -- fail instead of skipping (see
+        # app/tests/e2e_infra.py).
+        env:
+          E2E_REQUIRE_ONLINE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
         run: |
           cd homeintent-moonshine-stt
           python3 -m pytest app/tests/test_e2e_transcribe.py -v -m e2e -rs
 
   e2e-tts-synthesize:
-    name: Real German Pocket TTS E2E Wyoming round-trip (manual only)
+    name: Real German Pocket TTS E2E Wyoming round-trip
     # Downloads a real Pocket TTS model + voice state on every run -- kept
     # out of the normal push/PR pipeline (see B30 review note /
-    # ABSCHLUSSBERICHT_V0.2.0.md) and only runs when triggered manually via
-    # `workflow_dispatch` from the Actions tab.
-    if: github.event_name == 'workflow_dispatch'
+    # ABSCHLUSSBERICHT_V0.2.0.md), only runs when triggered manually via
+    # `workflow_dispatch`, or automatically as a release gate on a version
+    # tag (`v*`) push -- a release must never ship without this having
+    # actually run and passed, see ABSCHLUSSBERICHT_V0.2.3.md.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -221,12 +234,45 @@ jobs:
           python-version: "3.11"
 
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
-      - run: pip install pytest pytest-asyncio wyoming pocket-tts
+      - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
 
       - name: Synthesize German text with Pocket TTS and check the audio
+        env:
+          E2E_REQUIRE_ONLINE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
         run: |
           cd homeintent-moonshine-stt
           python3 -m pytest app/tests/test_e2e_tts.py -v -m e2e -rs
+
+  generate-stt-fixture:
+    name: Regenerate STT test audio fixture (manual only, uploads artifact)
+    # Never runs automatically -- only when explicitly requested via the
+    # workflow_dispatch "regenerate_fixture" input (see
+    # app/tests/fixtures/README.md for why this needs real network access
+    # this repository's own CI has, but a local sandbox may not). Uploads
+    # the new WAV as a build artifact for manual review and commit -- it is
+    # never committed automatically.
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.regenerate_fixture == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r homeintent-moonshine-stt/requirements-runtime.txt
+
+      - name: Generate fixture
+        run: |
+          cd homeintent-moonshine-stt
+          python3 scripts/generate_stt_fixture.py app/tests/fixtures/schalte_licht_wohnzimmer.wav
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: schalte_licht_wohnzimmer-wav
+          path: homeintent-moonshine-stt/app/tests/fixtures/schalte_licht_wohnzimmer.wav
+          retention-days: 14
 
   build-aarch64:
     name: Build aarch64 image (QEMU, build-only)

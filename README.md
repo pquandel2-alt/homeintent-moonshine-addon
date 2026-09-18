@@ -99,7 +99,7 @@ The add-on is configured via Home Assistant's UI:
 | **log_level** | `DEBUG`, `INFO`, `WARNING`, `ERROR` | `INFO` | Logging verbosity |
 | **log_transcripts** | `true`/`false` | `false` | Log recognized text. **Off by default** — enable only if you need to debug what was actually recognized |
 | **log_performance** | `true`/`false` | `true` | Log a compact per-utterance STT timing line (model, audio duration, inference time, RTF). Never includes transcript text |
-| **use_ha_vocabulary** | `true`/`false` | `true` | Automatically bias recognition towards the entities you've actually exposed to Home Assistant Assist — names, aliases, and "Area Entity"/"Area Alias" combinations like "Wohnzimmer Rolllade" or "Wohnzimmer Rollo" where a real relationship is known. Entities not exposed to Assist (e.g. an unexposed `sensor.router_cpu_temperature`) contribute no vocabulary. Also covers entities with no Home Assistant entity registry entry at all ("legacy" entities), using their live friendly name; these never contribute Area combinations since they have no registry entry to resolve an area from. **Strictly read-only.** If Home Assistant is unreachable, the add-on keeps using the last successfully loaded vocabulary rather than dropping it |
+| **use_ha_vocabulary** | `true`/`false` | `true` | Automatically bias recognition towards the entities you've actually exposed to Home Assistant Assist — names, aliases, and "Area Entity"/"Area Alias" combinations like "Wohnzimmer Rolllade" or "Wohnzimmer Rollo" where a real relationship is known. Entities not exposed to Assist (e.g. an unexposed `sensor.router_cpu_temperature`) contribute no vocabulary. Entities with no Home Assistant entity registry entry at all ("legacy" entities) are included only when their Assist exposure can be positively confirmed — see [Privacy](#privacy) for why this is intentionally conservative. **Strictly read-only.** If Home Assistant is unreachable, the add-on keeps using the last successfully loaded vocabulary rather than dropping it |
 | **ha_vocabulary_refresh_minutes** | `0`–`1440` | `30` | How often to re-read the HA registries and refresh keyterms. `0` disables periodic refresh (read once at startup) |
 | **extra_keyterms** | comma-separated text | `""` | Additional words/phrases to bias recognition towards, merged with the Home Assistant vocabulary and deduplicated |
 | **keyterm_boost** | `0.0`–`10.0` | `2.0` | Strength applied to keyterms (matches Moonshine's own default) |
@@ -244,6 +244,15 @@ layered on top.
   A failed refresh keeps the last successfully loaded vocabulary rather than losing
   it; a *successful* refresh that no longer sees a previously-exposed entity does
   remove it from the vocabulary.
+- **Legacy (non-registry) entities are handled conservatively.** Home Assistant
+  provides no read-only API that can tell an explicit "hide from Assist" apart
+  from "never evaluated" for an entity with no entity registry entry — so this
+  add-on never guesses. A legacy entity is only ever added to the automatic
+  vocabulary when its Assist exposure can be positively confirmed; an ambiguous
+  one is simply left out, on the principle that silently re-including an entity
+  you removed from Assist would be worse than occasionally missing an obscure
+  one. This only affects STT keyterm biasing — it never changes Home Assistant's
+  own Assist exposure or any other state.
 - **`save_debug_audio` is off by default**, and applies only to received STT audio
   (never TTS output). Metadata is an explicit allowlist (timestamp, model, language,
   transcript, duration, sample rate) — never an entity state.

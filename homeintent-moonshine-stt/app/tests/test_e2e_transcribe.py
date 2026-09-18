@@ -1,25 +1,35 @@
 """Real end-to-end Wyoming round-trip test: German audio in, transcript out.
 
 Marked ``e2e`` and excluded from the default test run (see pyproject.toml's
-``addopts = "-m 'not e2e'"``) because it downloads a real Moonshine STT model
-and a real Piper TTS voice over the network and runs actual inference -- slow,
-and not something a hermetic unit-test run should depend on. Run explicitly
-with ``pytest -m e2e``.
+``addopts = "-m 'not e2e'"``) because it downloads a real Moonshine STT
+model over the network and runs actual inference -- slow, and not
+something a hermetic unit-test run should depend on. Run explicitly with
+``pytest -m e2e``.
 
-No third-party audio is committed to this repository. The German test
-utterance is synthesized on the fly with moonshine_voice's own TextToSpeech,
-so there is no audio-licensing question to resolve -- nothing is shipped or
-stored, only downloaded ephemerally at test time and discarded afterwards.
+Tests ONLY the STT path: fixed audio fixture -> real Moonshine model ->
+real Wyoming server -> real Wyoming client -> transcript. This
+deliberately does NOT also synthesize the test audio with a TTS voice on
+every run (that used to make the test's outcome depend on two independent
+models' behavior at once, and was flaky in practice -- see
+ABSCHLUSSBERICHT_V0.2.3.md). Pocket TTS has its own, separate e2e test
+(test_e2e_tts.py).
+
+The audio fixture is a small, committed, deterministic WAV file -- see
+app/tests/fixtures/README.md for its exact text, generation method,
+source, and license. It is never regenerated as part of a normal test run
+(see scripts/generate_stt_fixture.py and the ``generate-stt-fixture``
+workflow_dispatch-only CI job for that).
 
 If the network/infrastructure is genuinely unavailable, the test is
-skipped with a clear reason. Anything else is treated as a real regression
-and must fail (see app/tests/e2e_infra.py).
+skipped with a clear reason -- unless ``E2E_REQUIRE_ONLINE=1`` (release-gate
+CI on a version tag), in which case any failure, infra or not, fails the
+test outright (see app/tests/e2e_infra.py).
 """
 
 import asyncio
+import wave
 from pathlib import Path
 
-import numpy as np
 import pytest
 from wyoming.asr import Transcript
 from wyoming.audio import AudioChunk, AudioStart, AudioStop
@@ -28,50 +38,28 @@ from wyoming.server import AsyncTcpServer
 
 from app.handler import MoonshineAsrHandler
 from app.models import load_transcriber
-from app.tests.e2e_infra import is_infra_failure
+from app.tests.e2e_infra import handle_infra_or_reraise
 
-GERMAN_SENTENCE = "schalte das licht im wohnzimmer ein"
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "schalte_licht_wohnzimmer.wav"
+
+# The fixture's spoken sentence is "Schalte das Licht im Wohnzimmer ein."
+# -- both keywords must appear for the test to pass; a real German ASR
+# model recognizing this short, clear smart-home command must get both,
+# not just one, or something is meaningfully wrong.
 EXPECTED_KEYWORDS = ("licht", "wohnzimmer")
 
-TTS_LANGUAGE = "de-de"
-TTS_VOICE = "piper_de_DE-thorsten-medium"
 WYOMING_SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 1024  # ~64ms per chunk at 16kHz, a realistic Wyoming chunk size
 
 
-def _synthesize_german_pcm() -> bytes:
-    """Synthesize GERMAN_SENTENCE and return 16kHz mono 16-bit PCM bytes.
-
-    Raises whatever moonshine_voice raises (network error, missing voice,
-    etc.) -- the caller is responsible for turning that into a skip.
-    """
-    from moonshine_voice import TextToSpeech
-
-    tts = TextToSpeech().language(TTS_LANGUAGE).voice(TTS_VOICE)
-    try:
-        tts.load()
-        samples, source_rate = tts.synthesize(GERMAN_SENTENCE)
-    finally:
-        tts.close()
-
-    audio = np.asarray(samples, dtype=np.float32)
-    if source_rate != WYOMING_SAMPLE_RATE:
-        audio = _resample_linear(audio, source_rate, WYOMING_SAMPLE_RATE)
-
-    pcm_int16 = np.clip(audio * 32768.0, -32768, 32767).astype(np.int16)
-    return bytes(pcm_int16.tobytes())
-
-
-def _resample_linear(
-    samples: np.ndarray[tuple[int], np.dtype[np.float32]], source_rate: int, target_rate: int
-) -> np.ndarray[tuple[int], np.dtype[np.float32]]:
-    """Numpy-only linear-interpolation resample of mono float32 audio."""
-    duration_s = samples.shape[0] / source_rate
-    n_target = int(round(duration_s * target_rate))
-    source_times = np.arange(samples.shape[0]) / source_rate
-    target_times = np.arange(n_target) / target_rate
-    resampled = np.interp(target_times, source_times, samples)
-    return resampled.astype(np.float32)
+def _load_fixture_pcm() -> bytes:
+    with wave.open(str(FIXTURE_PATH), "rb") as wav_file:
+        assert wav_file.getnchannels() == 1, "Fixture must be mono"
+        assert wav_file.getsampwidth() == 2, "Fixture must be 16-bit PCM"
+        assert wav_file.getframerate() == WYOMING_SAMPLE_RATE, (
+            f"Fixture must be {WYOMING_SAMPLE_RATE}Hz"
+        )
+        return wav_file.readframes(wav_file.getnframes())
 
 
 async def _run_transcribe_round_trip(pcm_bytes: bytes, cache_root: Path) -> str:
@@ -121,38 +109,18 @@ async def _run_transcribe_round_trip(pcm_bytes: bytes, cache_root: Path) -> str:
 @pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_german_audio_round_trip_produces_transcript(tmp_path: Path) -> None:
-    try:
-        pcm_bytes = _synthesize_german_pcm()
-    except Exception as e:
-        if is_infra_failure(e):
-            pytest.skip(f"German TTS voice unreachable ({type(e).__name__}: {e})")
-        raise
+    pcm_bytes = _load_fixture_pcm()
 
     try:
         transcript = await _run_transcribe_round_trip(pcm_bytes, cache_root=tmp_path)
     except Exception as e:
-        if is_infra_failure(e):
-            pytest.skip(f"Moonshine STT model unreachable ({type(e).__name__}: {e})")
-        raise
+        handle_infra_or_reraise(e, "Moonshine STT model unreachable")
+        return  # unreachable: handle_infra_or_reraise() always skips or raises
 
     assert transcript.strip(), "Expected a non-empty transcript for real German speech"
 
     lowered = transcript.lower()
     matched = [kw for kw in EXPECTED_KEYWORDS if kw in lowered]
-    assert matched, (
-        f"Expected at least one of {EXPECTED_KEYWORDS} in transcript, got: {transcript!r}"
+    assert set(matched) == set(EXPECTED_KEYWORDS), (
+        f"Expected both {EXPECTED_KEYWORDS} in transcript, got: {transcript!r}"
     )
-
-
-@pytest.mark.e2e
-def test_synthesized_audio_is_valid_wyoming_pcm() -> None:
-    try:
-        pcm_bytes = _synthesize_german_pcm()
-    except Exception as e:
-        if is_infra_failure(e):
-            pytest.skip(f"German TTS voice unreachable ({type(e).__name__}: {e})")
-        raise
-
-    assert len(pcm_bytes) % 2 == 0
-    duration_s = (len(pcm_bytes) / 2) / WYOMING_SAMPLE_RATE
-    assert 0.3 < duration_s < 10.0, f"Unexpected synthesized duration: {duration_s}s"

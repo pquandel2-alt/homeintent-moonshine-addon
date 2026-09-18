@@ -1196,49 +1196,49 @@ class TestLegacyEntityIds:
 
 
 class TestComputeLegacyExposedEntityIds:
-    def test_explicit_true_override_wins(self):
+    """Deliberately CONSERVATIVE (see ha_vocabulary.py's module docstring
+    and this function's own docstring, re-verified against the current
+    home-assistant/core dev branch source on 2026-09-18): a legacy entity
+    is included ONLY when a positive, observed exposure signal exists.
+    There is no read-only API that can tell an explicit ``should_expose=
+    False`` apart from "never evaluated" for a legacy entity, so this
+    module never guesses -- unlike registry entities, it never falls back
+    to the default-exposure rule for them.
+    """
+
+    def test_positive_signal_included(self):
         legacy_ids = {"switch.alte_kaffeemaschine"}
-        states: list[dict[str, Any]] = []
-        result = compute_legacy_exposed_entity_ids(
-            legacy_ids, states, expose_new_default=False, explicitly_exposed_legacy_ids=legacy_ids
-        )
+        result = compute_legacy_exposed_entity_ids(legacy_ids, legacy_ids)
         assert result == legacy_ids
 
-    def test_no_override_and_expose_new_disabled_is_not_exposed(self):
+    def test_no_signal_at_all_is_excluded(self):
+        """switch is a DEFAULT_EXPOSED_DOMAINS domain -- a registry entity
+        in this domain would default-expose, but a legacy entity with no
+        observed positive signal must NOT, since that would risk
+        re-including an entity explicitly hidden from Assist."""
         legacy_ids = {"switch.alte_kaffeemaschine"}
-        result = compute_legacy_exposed_entity_ids(
-            legacy_ids, [], expose_new_default=False, explicitly_exposed_legacy_ids=set()
-        )
+        result = compute_legacy_exposed_entity_ids(legacy_ids, set())
         assert result == set()
 
-    def test_no_override_falls_back_to_default_rule_when_expose_new_enabled(self):
-        """switch domain is in DEFAULT_EXPOSED_DOMAINS -- default-exposed
-        with no explicit override, exactly like a registry entity."""
-        legacy_ids = {"switch.alte_kaffeemaschine"}
-        result = compute_legacy_exposed_entity_ids(
-            legacy_ids, [], expose_new_default=True, explicitly_exposed_legacy_ids=set()
-        )
-        assert result == legacy_ids
-
-    def test_non_default_domain_without_override_is_not_exposed(self):
-        legacy_ids = {"sensor.legacy_router_cpu"}
-        states = [
-            {"entity_id": "sensor.legacy_router_cpu", "attributes": {"device_class": "voltage"}}
-        ]
-        result = compute_legacy_exposed_entity_ids(
-            legacy_ids, states, expose_new_default=True, explicitly_exposed_legacy_ids=set()
-        )
-        assert result == set()
-
-    def test_default_exposed_sensor_device_class_from_state(self):
+    def test_sensor_domain_with_positive_signal_included(self):
         legacy_ids = {"sensor.legacy_temp"}
-        states = [
-            {"entity_id": "sensor.legacy_temp", "attributes": {"device_class": "temperature"}}
-        ]
-        result = compute_legacy_exposed_entity_ids(
-            legacy_ids, states, expose_new_default=True, explicitly_exposed_legacy_ids=set()
-        )
+        result = compute_legacy_exposed_entity_ids(legacy_ids, legacy_ids)
         assert result == legacy_ids
+
+    def test_sensor_domain_without_signal_excluded(self):
+        legacy_ids = {"sensor.legacy_router_cpu"}
+        result = compute_legacy_exposed_entity_ids(legacy_ids, set())
+        assert result == set()
+
+    def test_positive_signal_outside_legacy_ids_is_ignored(self):
+        """explicitly_exposed_legacy_ids may (structurally) contain ids
+        outside legacy_ids -- only the intersection counts."""
+        legacy_ids = {"switch.a"}
+        result = compute_legacy_exposed_entity_ids(legacy_ids, {"switch.b"})
+        assert result == set()
+
+    def test_empty_legacy_ids_produces_empty_result(self):
+        assert compute_legacy_exposed_entity_ids(set(), {"switch.a"}) == set()
 
 
 class TestBuildLegacyPseudoEntities:
@@ -1324,8 +1324,42 @@ class TestLegacyEntityEndToEndVocabulary:
 
 
 class TestFetchHaVocabularyLegacyEntities:
+    """Scenarios A-F from the v0.2.3 task spec, reflecting the real
+    information the read-only API can actually provide (see
+    compute_legacy_exposed_entity_ids()'s docstring) -- never a simulated
+    signal the real API cannot give."""
+
     @pytest.mark.asyncio
-    async def test_legacy_entity_exposed_produces_vocabulary(self, monkeypatch):
+    async def test_a_registry_entity_explicit_false_excluded(self, monkeypatch):
+        """A: registry entity switch.kaffeemaschine, explicit false ->
+        NOT in vocabulary. Registry entities are unaffected by the legacy
+        conservatism change -- their own cached options are authoritative."""
+        import app.ha_vocabulary as mod
+
+        entities = [
+            {
+                "entity_id": "switch.kaffeemaschine",
+                "area_id": None,
+                "device_id": None,
+                "name": "Kaffeemaschine",
+                "original_name": None,
+                "entity_category": None,
+                "hidden_by": None,
+                "options": {CONVERSATION_ASSISTANT: {"should_expose": False}},
+            }
+        ]
+        fake_ws = _FakeWebSocket(_full_script(entities=entities))
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
+
+        result = await fetch_ha_vocabulary(token="abc")
+
+        assert result.success is True
+        assert result.terms == []
+
+    @pytest.mark.asyncio
+    async def test_b_legacy_entity_positive_exposure_included(self, monkeypatch):
+        """B: legacy entity switch.alte_kaffeemaschine with a positive
+        explicit conversation exposure signal -> IN vocabulary."""
         import app.ha_vocabulary as mod
 
         entities: list[dict[str, Any]] = []
@@ -1335,7 +1369,13 @@ class TestFetchHaVocabularyLegacyEntities:
                 "attributes": {"friendly_name": "Kaffeemaschine"},
             }
         ]
-        fake_ws = _FakeWebSocket(_full_script(entities=entities, states=states))
+        fake_ws = _FakeWebSocket(
+            _full_script(
+                entities=entities,
+                states=states,
+                explicitly_exposed_legacy_ids={"switch.alte_kaffeemaschine"},
+            )
+        )
         monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
 
         result = await fetch_ha_vocabulary(token="abc")
@@ -1345,22 +1385,21 @@ class TestFetchHaVocabularyLegacyEntities:
         assert "Kaffeemaschine" in result.terms
 
     @pytest.mark.asyncio
-    async def test_legacy_entity_hidden_via_explicit_override_produces_no_vocabulary(
-        self, monkeypatch
-    ):
+    async def test_c_legacy_entity_no_positive_proof_excluded(self, monkeypatch):
+        """C: legacy entity switch.alte_kaffeemaschine, no positive
+        exposure proof at all -> NOT in vocabulary under the conservative
+        strategy (even though switch is a default-exposed domain for
+        registry entities)."""
         import app.ha_vocabulary as mod
 
-        # A non-default-exposed domain (sensor with a non-allowlisted
-        # device_class) with expose_new disabled -- never exposed, with or
-        # without the (empty) explicit-override list.
         entities: list[dict[str, Any]] = []
         states = [
             {
-                "entity_id": "sensor.legacy_router_cpu",
-                "attributes": {"friendly_name": "Router CPU", "device_class": "voltage"},
+                "entity_id": "switch.alte_kaffeemaschine",
+                "attributes": {"friendly_name": "Kaffeemaschine"},
             }
         ]
-        fake_ws = _FakeWebSocket(_full_script(entities=entities, states=states, expose_new=False))
+        fake_ws = _FakeWebSocket(_full_script(entities=entities, states=states))
         monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
 
         result = await fetch_ha_vocabulary(token="abc")
@@ -1370,7 +1409,28 @@ class TestFetchHaVocabularyLegacyEntities:
         assert result.terms == []
 
     @pytest.mark.asyncio
-    async def test_legacy_entity_default_exposed_without_override(self, monkeypatch):
+    async def test_d_legacy_sensor_positive_exposure_included(self, monkeypatch):
+        """D: legacy entity sensor.temp with a positive explicit exposure
+        -> IN vocabulary."""
+        import app.ha_vocabulary as mod
+
+        entities: list[dict[str, Any]] = []
+        states = [{"entity_id": "sensor.temp", "attributes": {"friendly_name": "Temperatur"}}]
+        fake_ws = _FakeWebSocket(
+            _full_script(
+                entities=entities, states=states, explicitly_exposed_legacy_ids={"sensor.temp"}
+            )
+        )
+        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
+
+        result = await fetch_ha_vocabulary(token="abc")
+
+        assert result.success is True
+        assert "Temperatur" in result.terms
+
+    @pytest.mark.asyncio
+    async def test_e_legacy_entity_uses_friendly_name(self, monkeypatch):
+        """E: no registry entry, friendly_name present -> friendly_name used."""
         import app.ha_vocabulary as mod
 
         entities: list[dict[str, Any]] = []
@@ -1380,50 +1440,13 @@ class TestFetchHaVocabularyLegacyEntities:
                 "attributes": {"friendly_name": "Kaffeemaschine"},
             }
         ]
-        fake_ws = _FakeWebSocket(_full_script(entities=entities, states=states, expose_new=True))
-        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
-
-        result = await fetch_ha_vocabulary(token="abc")
-
-        assert result.success is True
-        assert "Kaffeemaschine" in result.terms
-
-    @pytest.mark.asyncio
-    async def test_legacy_entity_explicit_should_expose_false_semantics(self, monkeypatch):
-        """A legacy entity outside the default-exposed domains, with no
-        cached True override, is never exposed -- matches
-        _async_should_expose_legacy_entity()'s explicit-False/never-
-        evaluated cases (both fall through to the default rule; see module
-        docstring's documented read-only limitation)."""
-        import app.ha_vocabulary as mod
-
-        entities: list[dict[str, Any]] = []
-        states = [
-            {
-                "entity_id": "sensor.legacy_diagnostic",
-                "attributes": {"friendly_name": "Diagnostic", "device_class": "voltage"},
-            }
-        ]
-        fake_ws = _FakeWebSocket(_full_script(entities=entities, states=states))
-        monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
-
-        result = await fetch_ha_vocabulary(token="abc")
-
-        assert result.success is True
-        assert result.terms == []
-
-    @pytest.mark.asyncio
-    async def test_legacy_entity_with_friendly_name_end_to_end(self, monkeypatch):
-        import app.ha_vocabulary as mod
-
-        entities: list[dict[str, Any]] = []
-        states = [
-            {
-                "entity_id": "switch.alte_kaffeemaschine",
-                "attributes": {"friendly_name": "Kaffeemaschine"},
-            }
-        ]
-        fake_ws = _FakeWebSocket(_full_script(entities=entities, states=states))
+        fake_ws = _FakeWebSocket(
+            _full_script(
+                entities=entities,
+                states=states,
+                explicitly_exposed_legacy_ids={"switch.alte_kaffeemaschine"},
+            )
+        )
         monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
 
         result = await fetch_ha_vocabulary(token="abc")
@@ -1431,12 +1454,18 @@ class TestFetchHaVocabularyLegacyEntities:
         assert result.terms == ["Kaffeemaschine"]
 
     @pytest.mark.asyncio
-    async def test_legacy_entity_without_friendly_name_end_to_end(self, monkeypatch):
+    async def test_legacy_entity_without_friendly_name_falls_back_to_entity_id(self, monkeypatch):
         import app.ha_vocabulary as mod
 
         entities: list[dict[str, Any]] = []
         states = [{"entity_id": "switch.alte_kaffeemaschine", "attributes": {}}]
-        fake_ws = _FakeWebSocket(_full_script(entities=entities, states=states))
+        fake_ws = _FakeWebSocket(
+            _full_script(
+                entities=entities,
+                states=states,
+                explicitly_exposed_legacy_ids={"switch.alte_kaffeemaschine"},
+            )
+        )
         monkeypatch.setattr(mod, "websockets", _fake_websockets_module(fake_ws))
 
         result = await fetch_ha_vocabulary(token="abc")
@@ -1482,8 +1511,9 @@ class TestFetchHaVocabularyLegacyEntities:
     @pytest.mark.asyncio
     async def test_missing_expose_entity_list_command_degrades_gracefully(self, monkeypatch):
         """Older Home Assistant cores without homeassistant/expose_entity/
-        list must not fail the whole vocabulary fetch -- legacy entities
-        simply fall back to the default-exposure rule."""
+        list must not fail the whole vocabulary fetch -- with no way at all
+        to observe a positive legacy exposure signal, legacy entities are
+        conservatively excluded (never guessed via the default rule)."""
         import app.ha_vocabulary as mod
 
         entities: list[dict[str, Any]] = []
@@ -1501,7 +1531,7 @@ class TestFetchHaVocabularyLegacyEntities:
         result = await fetch_ha_vocabulary(token="abc")
 
         assert result.success is True
-        assert "Kaffeemaschine" in result.terms
+        assert result.terms == []
 
     @pytest.mark.asyncio
     async def test_no_legacy_entities_never_sends_expose_entity_list_command(self, monkeypatch):

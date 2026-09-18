@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.3] - 2026-09-18
+
+Verification/stability release: fixes the actually-red v0.2.2 release-tag CI
+(a flaky STT e2e test that synthesized its own test audio, now replaced with a
+fixed deterministic fixture), corrects an over-eager legacy Home Assistant
+entity exposure fallback to a conservative, positive-signal-only strategy,
+unifies runtime and e2e dependency versions, and makes the real Pocket TTS
+e2e test run automatically as a release gate on version tags. No new STT
+engine, TTS model, fine-tuning, or architecture changes.
+
+See `homeintent-moonshine-stt/CHANGELOG.md` and `ABSCHLUSSBERICHT_V0.2.3.md` for full details.
+
 ## [0.2.2] - 2026-09-18
 
 Targeted quality/stability pass: legacy (non-registry) Home Assistant entities

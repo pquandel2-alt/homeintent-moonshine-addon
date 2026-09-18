@@ -11,5 +11,5 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
-      - run: pip install mypy numpy==2.4.6 moonshine-voice wyoming websockets==17.1 pytest pytest-asyncio pyyaml pocket-tts
+      - run: pip install mypy pytest pytest-asyncio pyyaml -r homeintent-moonshine-stt/requirements-runtime.txt
       - run: mypy --config-file homeintent-moonshine-stt/app/pyproject.toml homeintent-moonshine-stt/app/

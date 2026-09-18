@@ -1,5 +1,56 @@
 # Changelog - HomeIntent Moonshine Voice Add-on
 
+## [0.2.3] - 2026-09-18
+
+Verification/stability release. No new STT engine, TTS model, fine-tuning, or
+architecture changes. See `ABSCHLUSSBERICHT_V0.2.3.md` for the full report.
+
+### Fixed
+- **Stabilized the real German Moonshine STT end-to-end test.** The published
+  v0.2.2 release tag's CI was actually red: the test used to synthesize its own
+  German test audio with a Piper voice on every run, and one such run was
+  mis-transcribed by Moonshine as "Schalte das Little Moons im Ei." instead of
+  "Schalte das Licht im Wohnzimmer ein." -- an unnecessary source of flakiness,
+  since the test's real purpose is to verify Moonshine, not Piper. It now uses
+  a fixed, committed, deterministic audio fixture (`app/tests/fixtures/
+  schalte_licht_wohnzimmer.wav`, MIT/CC0-licensed Piper `thorsten-medium`
+  voice output -- see `app/tests/fixtures/README.md` for full provenance) and
+  no longer runs any TTS at all; Pocket TTS keeps its own separate e2e test.
+- **Corrected an over-eager legacy/non-registry Home Assistant Assist exposure
+  fallback.** Re-verified against the current home-assistant/core source: no
+  read-only API can tell an explicit "hidden from Assist" apart from "never
+  evaluated" for an entity with no entity registry entry. The previous
+  implementation fell back to the same default-exposure rule registry entities
+  use, which risked silently re-including, in the automatic STT vocabulary, a
+  legacy entity a user had explicitly removed from Assist. Legacy entities are
+  now only included when their exposure can be positively confirmed; an
+  ambiguous one is simply left out.
+- **Runtime and CI/e2e dependency versions no longer drift.** The e2e test jobs
+  installed `moonshine-voice`/`wyoming`/`pocket-tts` unpinned, while the shipped
+  Dockerfile pins exact versions -- real e2e tests could silently run against a
+  different dependency stack than the add-on actually ships. Both now install
+  from a single `requirements-runtime.txt`, which the Dockerfile also installs
+  from directly; a new test guards `app/pyproject.toml`'s dependency metadata
+  against drifting from it again.
+- **Repository metadata**: `repository.yaml`'s `name` now reads "HomeIntent
+  Moonshine Voice" (matching the add-on's own display name since v0.2.0,
+  previously still "HomeIntent Moonshine STT"). The add-on slug is unchanged.
+
+### CI
+- The real Pocket TTS Wyoming end-to-end test now also runs automatically on
+  every version-tag (`v*`) push, not just on manual `workflow_dispatch` --
+  a release must never ship without this having actually run and passed.
+- New strict release-gate mode (`E2E_REQUIRE_ONLINE=1`, set automatically for
+  both real e2e jobs on a version-tag push): a genuine network/infrastructure
+  failure fails the test outright instead of skipping it, so a tag's CI run
+  can never look green purely because its e2e tests were silently skipped.
+  Local/manual runs without this variable set may still skip on a real,
+  classified infra failure, as before.
+- A new `generate-stt-fixture` `workflow_dispatch`-only job can regenerate the
+  STT audio fixture (uploaded as a build artifact for manual review) --
+  needed because this add-on's own real e2e model downloads require network
+  access a local development sandbox may not have.
+
 ## [0.2.2] - 2026-09-18
 
 Targeted quality/stability pass on top of v0.2.1's Assist-aware vocabulary: no

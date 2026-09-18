@@ -60,15 +60,21 @@ over one Wyoming service.
   combinations (e.g. `cover.wohnzimmer_rolllade` with alias "Rollo" in area
   "Wohnzimmer" → `Rolllade`, `Rollo`, `Wohnzimmer Rolllade`, `Wohnzimmer Rollo`).
   Entities not exposed to Assist (e.g. an unexposed `sensor.router_cpu_temperature`)
-  contribute nothing. Entities with no Home Assistant entity registry entry at all
-  ("legacy" entities) are also covered, using their live friendly name -- but never
-  contribute Area combination terms, since they have no registry entry to resolve
-  an area from. Newly exposed entities are picked up at the next refresh;
+  contribute nothing. Newly exposed entities are picked up at the next refresh;
   removing an exposure makes its terms disappear after the next successful refresh.
   Effective exposure is computed the same way Home Assistant Core itself does (an
   explicit override always wins, otherwise Core's own default-exposure rule).
   Strictly read-only. If Home Assistant can't be reached on a periodic refresh, the
   add-on keeps the last successfully loaded vocabulary rather than dropping it.
+- **Legacy (non-registry) entities**: entities with no Home Assistant entity
+  registry entry at all are handled conservatively. Home Assistant provides no
+  read-only API that can tell an explicit "hide from Assist" apart from "never
+  evaluated" for such an entity, so it is only ever added to the automatic
+  vocabulary (using its live friendly name, never an Area combination since it
+  has no registry entry to resolve an area from) when its Assist exposure can be
+  positively confirmed. An ambiguous legacy entity is simply left out — this
+  add-on never guesses either way, to avoid silently re-including an entity you
+  explicitly removed from Assist.
 - **ha_vocabulary_refresh_minutes** (default `30`): how often the vocabulary is
   re-read. `0` disables periodic refresh.
 - **extra_keyterms** (default empty): your own comma-separated words/phrases, merged

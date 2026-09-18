@@ -3,7 +3,7 @@ name: HomeIntent Moonshine Voice
 # Slug intentionally left as "homeintent-moonshine-stt" (its v0.1.x value) so
 # existing installations upgrade in place rather than appearing as a brand
 # new add-on -- see ABSCHLUSSBERICHT_V0.2.0.md's "Add-on name / slug" section.
-version: 0.2.2
+version: 0.2.3
 slug: homeintent-moonshine-stt
 description: Local German speech-to-text (Moonshine) and text-to-speech (Kyutai Pocket TTS) over Wyoming
 url: https://github.com/pquandel2-alt/homeintent-moonshine-addon

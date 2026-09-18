@@ -13,8 +13,17 @@ removed attribute, an invalid parameter, a model that no longer loads for
 a reason that isn't "couldn't connect" -- is left to fail the test.
 """
 
+import os
 import socket
 from urllib.error import URLError
+
+# When set to "1" (release-gate CI on a version tag, see
+# .github/workflows/build.yml), a real e2e test must not silently pass CI
+# by skipping on an infra failure -- a SKIPPED result is not proof the real
+# model/voice actually works. In that mode, handle_infra_or_reraise() below
+# never skips: every exception fails the test. Local developer runs (this
+# env var unset) may still skip on a genuine, classified infra failure.
+E2E_REQUIRE_ONLINE = os.environ.get("E2E_REQUIRE_ONLINE") == "1"
 
 _INFRA_EXCEPTION_TYPES: tuple[type[BaseException], ...] = (
     ConnectionError,  # covers ConnectionRefusedError/ConnectionResetError/...
@@ -71,3 +80,18 @@ def is_infra_failure(exc: BaseException) -> bool:
             return True
         current = current.__cause__ or current.__context__
     return False
+
+
+def handle_infra_or_reraise(exc: Exception, context: str) -> None:
+    """Call from an e2e test's ``except`` block: skips with a clear reason
+    for a genuine, classified infra failure -- unless ``E2E_REQUIRE_ONLINE``
+    is set (release-gate CI on a version tag), in which case it always
+    re-raises, since a SKIPPED result there would be mistaken for proof the
+    real model/voice actually works. Any non-infra exception always
+    re-raises, in every mode -- that is a real regression, never a skip.
+    """
+    import pytest
+
+    if is_infra_failure(exc) and not E2E_REQUIRE_ONLINE:
+        pytest.skip(f"{context} ({type(exc).__name__}: {exc})")
+    raise exc
