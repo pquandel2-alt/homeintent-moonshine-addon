@@ -13,7 +13,7 @@ from wyoming.server import AsyncTcpServer
 from app.debug_audio import DEFAULT_DEBUG_AUDIO_DIR
 from app.ha_vocabulary import fetch_ha_vocabulary
 from app.handler import MoonshineAsrHandler
-from app.keyterms import merge_keyterms, parse_extra_keyterms
+from app.keyterms import apply_safe_keyterms, merge_keyterms, parse_extra_keyterms
 from app.models import (
     DEFAULT_DECODE_INCOMPLETE_LINES,
     DEFAULT_KEYTERM_BOOST,
@@ -41,7 +41,7 @@ logging.basicConfig(
 )
 _LOGGER = logging.getLogger(__name__)
 
-VERSION = "0.2.4"
+VERSION = "0.2.5"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -185,18 +185,37 @@ async def _refresh_ha_vocabulary_periodically(
     it keeps using ``last_known_good_terms`` unchanged and does not touch
     the transcriber at all. Only a *successful* fetch (which may legitimately
     return an empty term list, e.g. no areas/devices/entities configured)
-    replaces it. See HaVocabularyResult's docstring in app/ha_vocabulary.py.
+    is even considered for applying. See HaVocabularyResult's docstring in
+    app/ha_vocabulary.py.
 
-    ``last_known_good_terms`` is mutated in place (list passed by the
-    caller) so the caller's copy always reflects the latest successful
-    fetch, matching how it was seeded from the initial startup fetch.
+    Applying the candidate terms always goes through apply_safe_keyterms()
+    (app/keyterms.py), which never raises: an individual HA name the
+    loaded model's tokenizer cannot represent (e.g. a newly added or
+    renamed entity/alias/area, possibly only incompatible in an
+    automatically generated Area+Entity combination) is skipped, not fatal
+    -- the refresh loop and STT both keep running.
+
+    ``last_known_good_terms`` is only updated (mutated in place, so the
+    caller's copy always reflects the latest successful fetch) AFTER
+    apply_safe_keyterms() confirms the final authoritative apply itself
+    succeeded (``apply_succeeded``) -- never before, and never merely
+    because the HA fetch succeeded. This keeps the transition atomic: if
+    the final apply call itself fails unexpectedly (a genuinely structural
+    error, since per-term content issues are already filtered out by that
+    point), apply_safe_keyterms() restores the previous effective keyterms
+    itself and ``last_known_good_terms`` is left completely untouched, so a
+    later refresh attempt starts from the same known-good baseline again.
 
     Every native call into the shared Moonshine transcriber -- including
     set_keyterms(), not just the streaming Start/AddAudio/Stop calls in
     app/streaming.py -- is serialized through the same ``moonshine_lock``
     passed in from app/__main__.py's main(), since moonshine-voice 0.1.5
     does not document set_keyterms() as safe to call concurrently with
-    other native calls on the same Transcriber.
+    other native calls on the same Transcriber. apply_safe_keyterms() may
+    issue several native calls while isolating an incompatible term; the
+    entire operation runs inside one lock acquisition (via a single
+    to_thread call) so it stays atomic with respect to concurrent
+    streaming sessions.
     """
     while True:
         await asyncio.sleep(interval_minutes * 60)
@@ -208,14 +227,30 @@ async def _refresh_ha_vocabulary_periodically(
             )
             continue
 
-        last_known_good_terms[:] = result.terms
-        effective = merge_keyterms(last_known_good_terms, manual_keyterms)
+        candidate_ha_terms = result.terms
+        candidate_effective = merge_keyterms(candidate_ha_terms, manual_keyterms)
+        previous_effective = merge_keyterms(last_known_good_terms, manual_keyterms)
         async with moonshine_lock:
-            await asyncio.to_thread(transcriber.set_keyterms, effective)  # type: ignore[attr-defined]
+            apply_result = await asyncio.to_thread(
+                apply_safe_keyterms,
+                transcriber,  # type: ignore[arg-type]
+                candidate_effective,
+                previous_effective,
+            )
+
+        if not apply_result.apply_succeeded:
+            _LOGGER.error(
+                "HA vocabulary refresh: applying the new keyterm list failed unexpectedly; "
+                "keeping last-known-good vocabulary (%d term(s))",
+                len(last_known_good_terms),
+            )
+            continue
+
+        last_known_good_terms[:] = candidate_ha_terms
         _LOGGER.info(
             "Refreshed Home Assistant vocabulary: ha_terms=%d effective keyterms=%d",
             len(last_known_good_terms),
-            len(effective),
+            len(apply_result.accepted),
         )
 
 
@@ -340,12 +375,23 @@ def _load_tts_synthesizer(args: argparse.Namespace) -> PocketTtsSynthesizer | No
 
 def _load_and_bias_transcriber(
     args: argparse.Namespace,
-) -> tuple[object, list[str], list[str]] | None:
+) -> tuple[object, list[str], list[str], list[str]] | None:
     """Load the transcriber and apply keyterm biasing. Returns None on failure.
 
-    Returns (transcriber, manual_keyterms, ha_terms) so the caller can seed
-    the periodic refresh loop's last-known-good HA vocabulary with exactly
-    what was actually applied at startup.
+    Returns (transcriber, manual_keyterms, ha_terms, accepted_keyterms) so
+    the caller can seed the periodic refresh loop's last-known-good HA
+    vocabulary with exactly what was actually fetched at startup, and log
+    the real, post-validation effective keyterm count.
+
+    Keyterm application always goes through apply_safe_keyterms() (see
+    app/keyterms.py): a single Home Assistant entity/alias/area name the
+    loaded model's tokenizer cannot represent (a real production incident:
+    the entity name "/Büro" made set_keyterms() raise MoonshineError, which
+    was uncaught here and crashed the whole add-on into a restart loop)
+    must never prevent the add-on from starting -- STT without keyterm
+    biasing is strictly better than no STT at all. No lock is needed here:
+    this runs before the Wyoming server starts serving any connection, so
+    nothing else can be touching the transcriber concurrently yet.
     """
     try:
         transcriber = load_transcriber(
@@ -362,10 +408,9 @@ def _load_and_bias_transcriber(
 
     manual_keyterms, ha_terms = _resolve_keyterms(args)
     effective_keyterms = merge_keyterms(ha_terms, manual_keyterms)
-    if effective_keyterms:
-        transcriber.set_keyterms(effective_keyterms)
+    result = apply_safe_keyterms(transcriber, effective_keyterms)
 
-    return transcriber, manual_keyterms, ha_terms
+    return transcriber, manual_keyterms, ha_terms, result.accepted
 
 
 class _LoadedEngines:
@@ -376,11 +421,13 @@ class _LoadedEngines:
         transcriber: object | None,
         manual_keyterms: list[str],
         initial_ha_terms: list[str],
+        accepted_keyterms: list[str],
         tts_synthesizer: PocketTtsSynthesizer | None,
     ) -> None:
         self.transcriber = transcriber
         self.manual_keyterms = manual_keyterms
         self.initial_ha_terms = initial_ha_terms
+        self.accepted_keyterms = accepted_keyterms
         self.tts_synthesizer = tts_synthesizer
 
 
@@ -393,11 +440,12 @@ def _load_engines(args: argparse.Namespace) -> _LoadedEngines | None:
     transcriber: object | None = None
     manual_keyterms: list[str] = []
     initial_ha_terms: list[str] = []
+    accepted_keyterms: list[str] = []
     if args.stt_enabled:
         loaded = _load_and_bias_transcriber(args)
         if loaded is None:
             return None
-        transcriber, manual_keyterms, initial_ha_terms = loaded
+        transcriber, manual_keyterms, initial_ha_terms, accepted_keyterms = loaded
 
     tts_synthesizer: PocketTtsSynthesizer | None = None
     if args.tts_enabled:
@@ -405,7 +453,9 @@ def _load_engines(args: argparse.Namespace) -> _LoadedEngines | None:
         if tts_synthesizer is None:
             return None
 
-    return _LoadedEngines(transcriber, manual_keyterms, initial_ha_terms, tts_synthesizer)
+    return _LoadedEngines(
+        transcriber, manual_keyterms, initial_ha_terms, accepted_keyterms, tts_synthesizer
+    )
 
 
 def main() -> int:
@@ -431,7 +481,7 @@ def main() -> int:
     initial_ha_terms = engines.initial_ha_terms
     tts_synthesizer = engines.tts_synthesizer
 
-    _log_startup_banner(args, manual_keyterms, merge_keyterms(initial_ha_terms, manual_keyterms))
+    _log_startup_banner(args, manual_keyterms, engines.accepted_keyterms)
 
     # One lock shared by every Wyoming connection's handler (native
     # start/add_audio/stop calls, see app/streaming.py) AND the periodic HA

@@ -267,3 +267,97 @@ class TestStartupBannerLoggedOnce:
 
         assert exit_code == 0
         mock_banner.assert_called_once()
+
+
+class _FakeMoonshineTranscriberForMain:
+    """A minimal fake matching real moonshine_voice.Transcriber.set_keyterms()
+    semantics: raises MoonshineError for the whole call if any term in the
+    attempted list is incompatible -- exactly how the real production
+    incident ("/Büro") crashed the add-on."""
+
+    def __init__(self, incompatible_terms: set[str]) -> None:
+        self.incompatible_terms = incompatible_terms
+        self.set_keyterms_calls: list[list[str]] = []
+
+    def set_keyterms(self, terms: list[str]) -> None:
+        self.set_keyterms_calls.append(list(terms))
+        for term in terms:
+            if term in self.incompatible_terms:
+                from moonshine_voice import MoonshineError
+
+                raise MoonshineError(f"Failed to set key terms: No match found for {term!r}")
+
+
+class TestKeytermCrashRegression:
+    """Regression coverage for the exact real production incident: the
+    Home-Assistant-derived entity name "/Büro" made
+    transcriber.set_keyterms() raise MoonshineError, uncaught, which
+    crashed the whole add-on (exit code 1) into a permanent restart loop.
+    Startup must now survive an incompatible keyterm from ANY source
+    (manual extra_keyterms here; HA-derived terms go through the identical
+    apply_safe_keyterms() path, see app/tests/test_keyterms.py)."""
+
+    def test_startup_does_not_crash_on_incompatible_manual_keyterm(self):
+        from app.__main__ import _load_and_bias_transcriber
+
+        args = _parse([])
+        args.use_ha_vocabulary = False
+        args.extra_keyterms = "Wohnzimmer,/Büro,Küche"
+        transcriber = _FakeMoonshineTranscriberForMain(incompatible_terms={"/Büro"})
+
+        with patch("app.__main__.load_transcriber", return_value=transcriber):
+            result = _load_and_bias_transcriber(args)
+
+        assert result is not None  # startup does not fail
+        _, _manual_keyterms, _ha_terms, accepted = result
+        assert "/Büro" not in accepted
+        assert "Wohnzimmer" in accepted
+        assert "Küche" in accepted
+
+    def test_startup_survives_when_every_keyterm_is_incompatible(self):
+        """Fall D: STT is more important than keyterm biasing -- the
+        service must still start with biasing simply turned off."""
+        from app.__main__ import _load_and_bias_transcriber
+
+        args = _parse([])
+        args.use_ha_vocabulary = False
+        args.extra_keyterms = "/Büro,\\Foo"
+        transcriber = _FakeMoonshineTranscriberForMain(incompatible_terms={"/Büro", "\\Foo"})
+
+        with patch("app.__main__.load_transcriber", return_value=transcriber):
+            result = _load_and_bias_transcriber(args)
+
+        assert result is not None
+        _, _, _, accepted = result
+        assert accepted == []
+
+    def test_main_end_to_end_survives_incompatible_keyterm(self):
+        """Definition of done: the full main() flow (including starting the
+        Wyoming server) must complete normally even with an incompatible
+        keyterm in the mix -- no crash, no non-zero exit code."""
+        argv = ["prog", "--no-tts-enabled", "--extra-keyterms", "Wohnzimmer,/Büro"]
+        transcriber = _FakeMoonshineTranscriberForMain(incompatible_terms={"/Büro"})
+
+        with (
+            patch.object(sys, "argv", argv),
+            patch("app.__main__.load_transcriber", return_value=transcriber),
+            patch("app.__main__.AsyncTcpServer") as mock_server_cls,
+        ):
+            args_for_ha = build_arg_parser().parse_args(argv[1:])
+            args_for_ha.use_ha_vocabulary = False
+            with patch("app.__main__.build_arg_parser") as mock_parser:
+                mock_parser.return_value.parse_args.return_value = args_for_ha
+
+                mock_server = MagicMock()
+
+                async def _fake_run(handler_factory):
+                    return None
+
+                mock_server.run.side_effect = _fake_run
+                mock_server_cls.return_value = mock_server
+
+                exit_code = main()
+
+        assert exit_code == 0
+        assert "/Büro" not in transcriber.set_keyterms_calls[-1]
+        assert "Wohnzimmer" in transcriber.set_keyterms_calls[-1]

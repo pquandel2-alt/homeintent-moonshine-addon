@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.5] - 2026-09-18
+
+Critical production bug fix: a single Home-Assistant-derived keyterm the
+loaded Moonshine model's tokenizer could not represent (real incident: the
+entity name "/Büro") crashed the whole add-on into a permanent restart loop.
+Introduces a reusable, safe keyterm-application layer used by startup,
+manual `extra_keyterms`, and the periodic HA vocabulary refresh alike --
+an incompatible term is now skipped and logged instead of taking down the
+service. No other behavior changes.
+
+See `homeintent-moonshine-stt/CHANGELOG.md` and `ABSCHLUSSBERICHT_V0.2.5.md` for full details.
+
 ## [0.2.4] - 2026-09-18
 
 Real-hardware performance + HA vocabulary fix: fixes a real bug found during

@@ -1,5 +1,63 @@
 # Changelog - HomeIntent Moonshine Voice Add-on
 
+## [0.2.5] - 2026-09-18
+
+Critical production bug fix. See `ABSCHLUSSBERICHT_V0.2.5.md` for the full
+root-cause analysis and architecture description.
+
+### Fixed
+- **A single Home-Assistant-derived keyterm the loaded Moonshine model's
+  tokenizer could not represent crashed the whole add-on into a permanent
+  restart loop.** Real production log:
+  `moonshine_voice.errors.MoonshineError: Failed to set key terms: Unknown
+  error` from `transcriber.set_keyterms(effective_keyterms)` in
+  `_load_and_bias_transcriber()`, raised for the entity name "/Büro" among
+  249 otherwise valid HA vocabulary terms, uncaught, exit code 1.
+  `Transcriber.set_keyterms()` joins the whole list into ONE comma-delimited
+  string for its native C API in a single call (verified against the
+  installed moonshine-voice==0.1.5 source directly) -- if the native
+  tokenizer rejects any single term, the entire call fails with a generic,
+  per-call (not per-term) error, and moonshine-voice's C API exposes no
+  separate "validate without activating" function to call instead.
+
+### Added
+- **`apply_safe_keyterms()`** (`app/keyterms.py`): the one, reusable, safe
+  path every caller now uses instead of calling
+  `transcriber.set_keyterms()` directly -- startup, manual
+  `extra_keyterms`, and the periodic HA vocabulary refresh all go through
+  it. Cheap syntactic pre-validation (empty/whitespace-only entries,
+  control characters, the comma wire-delimiter, unencodable Unicode;
+  German orthography -- umlauts, ß, spaces, hyphens, slashes -- is never
+  touched) is followed by validation against the ACTUAL loaded model via
+  `set_keyterms()` itself, using a divide-and-conquer search to isolate
+  incompatible terms without necessarily needing one native call per term.
+  Always ends with exactly one final, explicit, authoritative
+  `set_keyterms()` call for the accepted list -- diagnostic calls made
+  while isolating a bad term are never mistaken for the final state. Never
+  raises: a genuinely unexpected, non-per-term native error restores a
+  caller-supplied fallback (or disables biasing) instead of propagating.
+- Startup now logs a real, post-validation effective keyterm count and a
+  clear warning (with reason: empty/control_character/delimiter/
+  invalid_unicode/tokenizer_rejected/native_error) for every skipped term,
+  capped at 20 individual lines with a summary for larger rejections; full
+  detail remains available at DEBUG. The full HA vocabulary is never
+  logged at INFO.
+- The periodic refresh's last-known-good handling is now properly atomic:
+  a newly fetched HA vocabulary is only committed as the new
+  last-known-good state after `apply_safe_keyterms()` confirms its final,
+  authoritative apply actually succeeded -- not merely because the HA
+  fetch itself succeeded. If that final apply fails unexpectedly (a
+  genuinely structural error, since per-term issues are already filtered
+  out by that point), the previous known-good keyterms are restored and
+  `last_known_good_terms` is left untouched, so the next refresh attempt
+  starts from the same known-good baseline.
+
+### Investigated, not changed
+- `moonshine-voice` is already pinned at its latest published version
+  (0.1.5, confirmed against PyPI) -- no upgrade is available that would
+  fix this upstream. The defensive application layer above is necessary
+  regardless of any future upstream fix.
+
 ## [0.2.4] - 2026-09-18
 
 Real-hardware performance + HA vocabulary fix, driven entirely by real

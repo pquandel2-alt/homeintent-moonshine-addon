@@ -1,6 +1,6 @@
 [project]
 name = "homeintent-moonshine-stt"
-version = "0.2.4"
+version = "0.2.5"
 description = "German speech-to-text (Moonshine) and text-to-speech (Kyutai Pocket TTS)"
 requires-python = ">=3.11"
 dependencies = [
