@@ -41,6 +41,7 @@ htmlcov/
 models/
 cache/
 *.wav
+!homeintent-moonshine-stt/app/tests/fixtures/*.wav
 *.log
 
 # OS
