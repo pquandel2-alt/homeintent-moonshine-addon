@@ -267,4 +267,78 @@ wird im echten GitHub-Actions-Lauf verifiziert (siehe unten).
 
 ## Git / GitHub
 
-*(wird nach Push/CI-Check/Tag/Release unten vervollständigt)*
+- **Commits**: `88c4447` (Hauptimplementierung dieser Version), gefolgt von
+  `d4740d8` (Fix für einen echten CI-Fehler, siehe unten) — beide auf
+  `claude/moonshine-voice-stt-tts-73sjml` und direkt auf `master` gepusht,
+  wie bei den vorherigen Releases.
+- **Realer CI-Fehler gefunden und behoben**: Der erste Push (`88c4447`)
+  ergab einen echten roten `Type Check`-Lauf: `homeintent-moonshine-stt/
+  app/tests/e2e_infra.py:38: error: Unused "type: ignore" comment
+  [unused-ignore]`. Ursache: die lokale Sandbox-Umgebung dieser Sitzung hat
+  `requests` ohne Typ-Stubs installiert (daher war dort ein `# type:
+  ignore[import-untyped]` nötig), während GitHub Actions' Umgebung
+  `requests` mit vollständigen Typinformationen installiert (dort war
+  genau dieser Kommentar überflüssig und wird von mypy als Fehler
+  gewertet). Behoben durch einen `[[tool.mypy.overrides]]`-Eintrag für
+  `requests.*`/`huggingface_hub.*` (`ignore_missing_imports`, das nur bei
+  tatsächlich fehlenden Typinformationen greift) statt eines Inline-
+  Kommentars — dadurch verhält es sich in beiden Umgebungen identisch.
+  Lokal mit `ruff check`, `mypy` und der vollen Testsuite (325 Tests)
+  verifiziert, bevor der Fix gepusht wurde.
+- **CI (realer GitHub-Actions-Lauf für den finalen Commit `d4740d8`)**:
+  **GRÜN** — alle Pflicht-Checks:
+  - `Lint` ✅ success
+  - `Type Check` ✅ success
+  - `Tests` ✅ success
+  - `Build` ✅ success, alle vier Jobs grün: `e2e-audio-transcribe` (echtes
+    Wyoming-STT-Roundtrip), `Build amd64 image + smoke test` (echter
+    Docker-Build + realer Container-Start + Wyoming-Describe, inkl.
+    Upgrade-Simulation), `Build aarch64 image (QEMU, build-only)`. Der
+    TTS-E2E-Job (`workflow_dispatch`-only) wurde erwartungsgemäß
+    übersprungen (`skipped`) — er wurde in dieser Sitzung **nicht** manuell
+    ausgelöst (siehe Abschnitt 5 oben, Punkt 12: Empfehlung, ihn nach
+    diesem Release einmal manuell über die Actions-UI zu starten, um
+    Pocket TTS auch gegen ein reales, nicht durch die Sandbox-
+    Netzwerk-Policy blockiertes Netzwerk zu verifizieren).
+- **Tag `v0.2.2`**: **FEHLGESCHLAGEN.** `git tag -a v0.2.2 d4740d8 -m "..."`
+  gelang lokal; `git push origin v0.2.2` scheiterte mit:
+  ```
+  error: RPC failed; HTTP 403 curl 22 The requested URL returned error: 403
+  send-pack: unexpected disconnect while reading sideband packet
+  fatal: the remote end hung up unexpectedly
+  ```
+  Dieselbe Einschränkung wie bei v0.2.0 und v0.2.1: normale Branch-Pushes
+  funktionieren mit der aktuell autorisierten Claude-GitHub-App, ein reiner
+  Tag-Ref-Push wird von GitHub selbst mit einem echten 403 abgelehnt (kein
+  Netzwerk-Policy-Block dieser Sandbox). Der lokale Tag wurde wieder
+  gelöscht.
+- **GitHub Release**: **NICHT VERÖFFENTLICHT** — aus demselben Grund (kein
+  Tag vorhanden, keines der verfügbaren GitHub-MCP-Tools kann einen Tag-Ref
+  oder ein Release erstellen).
+
+**Nächster Schritt für den Nutzer** (wie bei v0.2.0/v0.2.1): folgenden Link
+öffnen, um Release **und** Tag `v0.2.2` in einem Schritt zu erstellen
+(Ziel-Commit `d4740d8` ist bereits vorausgewählt):
+
+`https://github.com/pquandel2-alt/homeintent-moonshine-addon/releases/new?tag=v0.2.2&target=d4740d8&title=HomeIntent+Moonshine+Voice+v0.2.2`
+
+Vorgeschlagene Release-Notes:
+
+> **What's changed**
+> - HA vocabulary now also covers entities with no Home Assistant entity
+>   registry entry at all ("legacy" entities), using the same
+>   effective-exposure logic Home Assistant Core itself uses for them —
+>   verified against the real home-assistant/core source.
+> - Fixed a Wyoming protocol violation: a mid-stream Pocket TTS failure
+>   could send a duplicate audio-start event.
+> - Pocket TTS's configured voice is now validated at startup (fails
+>   loudly on an invalid voice) and optionally warmed up
+>   (`tts_warmup: true`) so the first real request isn't slower than
+>   later ones.
+> - TTS performance logging now separates model compute time from
+>   lock-wait and Wyoming-send time, instead of one opaque RTF figure.
+> - Both real e2e tests now fail on an actual code/API regression instead
+>   of silently skipping it.
+>
+> **Upgrade**: normal update through the Home Assistant Add-on Store — no
+> manual installation steps required.
