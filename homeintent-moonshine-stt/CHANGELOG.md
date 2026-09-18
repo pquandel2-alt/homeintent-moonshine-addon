@@ -1,5 +1,89 @@
 # Changelog - HomeIntent Moonshine Voice Add-on
 
+## [0.2.4] - 2026-09-18
+
+Real-hardware performance + HA vocabulary fix, driven entirely by real
+production numbers from the first real Home Assistant installation and
+Assist test run. See `ABSCHLUSSBERICHT_V0.2.4.md` for the full report,
+including everything that was investigated but NOT changed (and why).
+
+### Fixed
+- **HA vocabulary silently produced 0 keyterms on a real, larger Home
+  Assistant installation.** The real log showed `ConnectionClosedError:
+  sent 1009 (message too big); frame exceeds limit of 1048576 bytes` --
+  websockets==17.1's own default `max_size` for `websockets.connect()` is
+  1 MiB, and a real `get_states`/`config/entity_registry/list` response on
+  a larger installation exceeds that. Fixed by passing an explicit,
+  generous `max_size` (32 MiB) to `websockets.connect()` -- chosen over
+  `max_size=None` (unlimited) even though the connection is strictly to
+  the local, trusted `ws://supervisor/core/websocket`, so a pathological
+  or malformed response still can't cause unbounded memory use. New tests
+  deliberately build a `get_states` response and a
+  `config/entity_registry/list` response that each exceed 1 MiB (verified
+  via `json.dumps()` length) and confirm both are handled correctly.
+- **The full startup banner was logged twice** -- once from inside
+  transcriber loading (before Pocket TTS even started loading, so its
+  info was necessarily stale) and once again after everything finished.
+  Removed the premature, duplicate call.
+
+### Performance
+- **STT**: real production numbers showed RTF 1.6-1.95 (audio ~4.5-4.6s,
+  inference 7.5-8.7s) -- slower than real-time on that hardware. Added
+  per-chunk instrumentation (`chunks`, `add_audio_total`, `add_audio_max`,
+  `avg_chunk` in the "STT completed" log line) so a real deployment can
+  tell whether that's steady-state throughput (every chunk takes about
+  the same, elevated time) or an isolated stall. Investigated
+  moonshine-voice==0.1.5's native C API for a thread-count option
+  (inspected its compiled library directly): confirmed none exists --
+  only `vad_threshold`, `decode_incomplete_lines`, `keyterm_boost`, and
+  `spelling_model_path` are recognized transcriber options. Per explicit
+  instruction not to blindly set `OMP_NUM_THREADS`-style environment
+  variables without a real, documented, effective API behind them, **no
+  `stt_threads` option was added** -- this is a checked-and-rejected
+  item, not something silently skipped.
+- **TTS**: real production numbers showed TTFA 1.2-2.5s and model RTF
+  1.5-2.0. Found that Pocket TTS's own library unconditionally forces
+  single-threaded PyTorch CPU execution (`torch.set_num_threads(1)` at
+  import time in its `tts_model` module) -- a real, plausible explanation
+  for RTF consistently above 1.0. Added a new `tts_threads` option
+  (default `0` = leave Pocket TTS's forced default alone; a positive
+  value overrides it via the same real, documented
+  `torch.set_num_threads()` API), applied once before the model loads.
+  Voice state was already cached (confirmed, not new in this release);
+  the "Prompting text took ..." cost visible in real logs comes from
+  Pocket TTS's own flow-LM text-conditioning pass inside its `_generate()`
+  method, which necessarily runs per request on the request's own text --
+  it is not a cache that can be shared across different synthesize
+  requests without changing what gets synthesized.
+- **Benchmark tooling** (`app/benchmark.py`): now supports comparing
+  multiple STT models in one run (`--models tiny,small`), the same tuning
+  knobs the add-on itself has (`--transcription-interval`,
+  `--decode-incomplete-lines`), synthetic keyterm-count benchmarking
+  (`--keyterm-count`), and machine-readable output (`--output json/csv`).
+  Still not run in CI and not a source of any number quoted in
+  README/DOCS -- GitHub Actions runners are not representative of real
+  Home Assistant hardware.
+
+### Investigated, not changed (see ABSCHLUSSBERICHT_V0.2.4.md for detail)
+- GPU device discovery warning (harmless on CPU-only hosts): no officially
+  documented suppression API found in the native library; left as-is
+  rather than risk fragile log manipulation.
+- The `kyutai/pocket-tts` 401 fallback to the public
+  `pocket-tts-without-voice-cloning` repo is entirely internal to
+  upstream's own `TTSModel.load_model()` (a `try/except` around the gated
+  download, with no parameter to skip straight to the fallback) -- not
+  something this add-on can configure without monkey-patching upstream
+  internals.
+- Sentence-by-sentence TTS streaming (to reduce perceived TTFA for long
+  replies): not implemented -- this development environment cannot run
+  real Pocket TTS inference to actually measure whether it would help,
+  and implementing unmeasured segmentation risked either no real benefit
+  or audible seams for no verified gain.
+- Real, verified tiny-vs-small and german-vs-german_24l hardware
+  comparisons: not performed in this environment (no network access to
+  download the models here) -- the extended benchmark tooling above lets
+  the actual target hardware produce these numbers.
+
 ## [0.2.3] - 2026-09-18
 
 Verification/stability release. No new STT engine, TTS model, fine-tuning, or

@@ -50,6 +50,15 @@ over one Wyoming service.
 - **tts_log_performance** (default `true`): logs a compact per-request timing
   breakdown (time-to-first-audio, lock-wait, model compute, Wyoming-send, wall
   time, model RTF, wall RTF). Never logs the synthesized text.
+- **tts_threads** (default `0` = auto): CPU threads Pocket TTS's PyTorch backend
+  uses (`torch.set_num_threads()`). Pocket TTS's own library forces this to `1`
+  internally at import time (`torch.set_num_threads(1)` in its `tts_model`
+  module) -- `0` leaves that untouched; a positive value overrides it. This is
+  a plausible real lever for real-time-factor on a multi-core host, since
+  Pocket TTS otherwise never uses more than one core by default. Benchmark
+  different values on your own hardware (see Performance Notes) before
+  changing it -- too high a value on a shared host can slow STT and TTS down
+  together instead of speeding TTS up (CPU oversubscription).
 
 ### Recognition tuning (STT keyterms and vocabulary)
 
@@ -66,6 +75,9 @@ over one Wyoming service.
   explicit override always wins, otherwise Core's own default-exposure rule).
   Strictly read-only. If Home Assistant can't be reached on a periodic refresh, the
   add-on keeps the last successfully loaded vocabulary rather than dropping it.
+  On larger installations, this used to fail entirely with a WebSocket
+  "message too big" error (fixed in v0.2.4 -- see CHANGELOG); a real,
+  larger installation should now get its vocabulary correctly.
 - **Legacy (non-registry) entities**: entities with no Home Assistant entity
   registry entry at all are handled conservatively. Home Assistant provides no
   read-only API that can tell an explicit "hide from Assist" apart from "never
@@ -138,11 +150,26 @@ Both are cached under `/data/` — subsequent starts are fast.
 - **TTS german model**: faster, recommended default
 - **TTS german_24l model**: higher quality, slower
 - Real-time-factor and end-to-end latency for both STT and TTS depend heavily on your
-  own CPU. Use `python -m app.benchmark <file.wav>` for STT RTF, and
+  own CPU. Use `python -m app.benchmark <file.wav> --models tiny,small` for STT RTF
+  (also supports `--transcription-interval`, `--decode-incomplete-lines`,
+  `--keyterm-count`, and `--output json`/`csv` for comparing configurations), and
   `tts_log_performance: true`'s log line for TTS TTFA/RTF, to measure your own
   hardware — no number in this document has been measured on this add-on's own
-  target hardware; see `ABSCHLUSSBERICHT_V0.2.0.md` for exactly what has and hasn't
-  been measured.
+  target hardware; see `ABSCHLUSSBERICHT_V0.2.0.md`/`ABSCHLUSSBERICHT_V0.2.4.md`
+  for exactly what has and hasn't been measured.
+- **STT thread tuning**: investigated (v0.2.4) and confirmed NOT available —
+  moonshine-voice==0.1.5's native transcriber only recognizes `vad_threshold`,
+  `decode_incomplete_lines`, `keyterm_boost`, and `spelling_model_path` as
+  options (verified by inspecting its compiled library); there is no
+  `num_threads`/intra-op/inter-op equivalent, so this add-on does not expose
+  an `stt_threads` option or set `OMP_NUM_THREADS`-style environment
+  variables that would have no documented effect.
+- **TTS thread tuning**: Pocket TTS's own library forces single-threaded
+  PyTorch CPU execution (`torch.set_num_threads(1)`) by default, which is a
+  real, plausible reason for its real-time-factor being consistently above
+  1.0 on production hardware. `tts_threads` (see Configuration above) is the
+  only way to override this. Benchmark different values on your own target
+  hardware before changing the default.
 
 ## Privacy
 

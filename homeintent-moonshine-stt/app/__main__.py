@@ -41,7 +41,7 @@ logging.basicConfig(
 )
 _LOGGER = logging.getLogger(__name__)
 
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

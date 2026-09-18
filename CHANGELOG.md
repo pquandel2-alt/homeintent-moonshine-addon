@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.4] - 2026-09-18
+
+Real-hardware performance + HA vocabulary fix: fixes a real bug found during
+the first real Home Assistant installation (HA vocabulary silently produced
+0 keyterms on a larger installation, due to a 1 MiB WebSocket message-size
+limit) and adds performance instrumentation/tuning based on real production
+STT/TTS timing numbers. No new STT engine, TTS model, fine-tuning, or
+architecture changes; Pocket TTS is kept as-is per this round's explicit
+scope.
+
+See `homeintent-moonshine-stt/CHANGELOG.md` and `ABSCHLUSSBERICHT_V0.2.4.md` for full details.
+
 ## [0.2.3] - 2026-09-18
 
 Verification/stability release: fixes the actually-red v0.2.2 release-tag CI
