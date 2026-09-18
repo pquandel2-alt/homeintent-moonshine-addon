@@ -93,9 +93,12 @@ over one Wyoming service.
   with the Home Assistant vocabulary and deduplicated.
 - **keyterm_boost** (default `2.0`): strength applied to keyterms.
 - **Keyterm safety**: every keyterm (from Home Assistant or `extra_keyterms`)
-  is validated against the loaded Moonshine model before use. A name the
-  model's tokenizer cannot represent is skipped and logged as a warning
-  instead of preventing the add-on from starting -- STT always comes up,
+  is validated against the loaded Moonshine model before use. If the model
+  rejects a name outright (e.g. because of an invisible formatting
+  character, an emoji, or a separator like `/`), the add-on first tries a
+  cleaned-up, still-German variant (e.g. `Treppe/Büro` -> `Treppe Büro`)
+  and re-validates that against the model too -- only a name that fails
+  both attempts is skipped and logged as a warning. STT always comes up,
   with or without full keyterm biasing.
 - **transcription_interval** (default `0.5`): seconds between partial transcript
   updates.

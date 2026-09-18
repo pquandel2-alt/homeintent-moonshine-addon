@@ -8,7 +8,11 @@ from app.keyterms import (
     REASON_DELIMITER,
     REASON_EMPTY,
     REASON_TOKENIZER_REJECTED,
+    STATUS_NORMALIZED,
+    STATUS_SPEECH_FALLBACK,
+    STATUS_UNCHANGED,
     _basic_validate,
+    _generate_speech_fallback,
     apply_safe_keyterms,
     merge_keyterms,
     normalize_keyterm,
@@ -101,11 +105,29 @@ class TestApplySafeKeyterms:
     restart loop). apply_safe_keyterms() is the single, reusable path that
     must make this impossible."""
 
-    def test_fall_a_exact_production_incident(self):
+    def test_fall_a_exact_production_incident_recovers_via_speech_fallback(self):
         """Fall A: the exact reported case -- '/Büro' among otherwise
-        valid HA-derived terms must not crash anything; it is skipped and
-        the rest of the vocabulary is still applied."""
+        valid HA-derived terms must not crash anything. Since only the
+        original, slash-containing form is rejected here (matching a model
+        that tokenizes the separator-free name fine), the speech-fallback
+        retry recovers it as 'Büro' instead of discarding it outright."""
         transcriber = _FakeMoonshineTranscriber(incompatible_terms={"/Büro"})
+        candidates = ["Wohnzimmer", "/Büro", "Küche", "Garage"]
+
+        result = apply_safe_keyterms(transcriber, candidates)
+
+        assert result.apply_succeeded is True
+        assert set(result.accepted) == {"Wohnzimmer", "Küche", "Garage", "Büro"}
+        assert result.rejected == []
+        fallback_entries = [a for a in result.applied if a.status == STATUS_SPEECH_FALLBACK]
+        assert len(fallback_entries) == 1
+        assert fallback_entries[0].original == "/Büro"
+        assert fallback_entries[0].final == "Büro"
+
+    def test_fall_a_variant_rejected_when_speech_fallback_also_fails(self):
+        """When even the speech-fallback variant is genuinely incompatible
+        with the loaded model, the term is skipped -- not force-applied."""
+        transcriber = _FakeMoonshineTranscriber(incompatible_terms={"/Büro", "Büro"})
         candidates = ["Wohnzimmer", "/Büro", "Küche", "Garage"]
 
         result = apply_safe_keyterms(transcriber, candidates)
@@ -131,7 +153,7 @@ class TestApplySafeKeyterms:
         assert candidates in transcriber.calls
 
     def test_fall_c_mixed_valid_and_invalid(self):
-        transcriber = _FakeMoonshineTranscriber(incompatible_terms={"/Büro"})
+        transcriber = _FakeMoonshineTranscriber(incompatible_terms={"/Büro", "Büro"})
         candidates = ["Wohnzimmer", "/Büro", "Küche", "Garage"]
 
         result = apply_safe_keyterms(transcriber, candidates)
@@ -141,7 +163,12 @@ class TestApplySafeKeyterms:
         assert transcriber.calls[-1] == result.accepted
 
     def test_fall_d_all_invalid_still_starts_without_biasing(self):
-        transcriber = _FakeMoonshineTranscriber(incompatible_terms={"/Büro", "\\Foo"})
+        """Even the speech-fallback variants ("Büro", "Foo") are rejected
+        here, so nothing survives -- the service must still start cleanly
+        with biasing turned off rather than being force-fed a bad list."""
+        transcriber = _FakeMoonshineTranscriber(
+            incompatible_terms={"/Büro", "\\Foo", "Büro", "Foo"}
+        )
         candidates = ["/Büro", "\\Foo"]
 
         result = apply_safe_keyterms(transcriber, candidates)
@@ -226,14 +253,88 @@ class TestApplySafeKeyterms:
 
     def test_bisection_isolates_multiple_bad_terms_spread_across_the_list(self):
         """Several unrelated incompatible terms in a longer list must all
-        be found and skipped, not just the first one encountered."""
-        transcriber = _FakeMoonshineTranscriber(incompatible_terms={"/Büro", "\\Keller"})
+        be found and skipped, not just the first one encountered. Their
+        speech-fallback variants ("Büro", "Keller") are also marked
+        incompatible here so this test genuinely exercises full rejection,
+        not fallback recovery (see the fallback-specific tests for that)."""
+        transcriber = _FakeMoonshineTranscriber(
+            incompatible_terms={"/Büro", "\\Keller", "Büro", "Keller"}
+        )
         candidates = ["Wohnzimmer", "/Büro", "Küche", "Garage", "\\Keller", "Bad", "Flur"]
 
         result = apply_safe_keyterms(transcriber, candidates)
 
         assert set(result.accepted) == {"Wohnzimmer", "Küche", "Garage", "Bad", "Flur"}
         assert {r.term for r in result.rejected} == {"/Büro", "\\Keller"}
+
+    def test_separator_speech_fallback_recovers_slash_term(self):
+        """Fall: 'Treppe/Büro' is rejected as-is by the loaded model but the
+        speech-safe fallback 'Treppe Büro' is accepted -- the composite
+        term survives instead of being dropped entirely."""
+        transcriber = _FakeMoonshineTranscriber(incompatible_terms={"Treppe/Büro"})
+
+        result = apply_safe_keyterms(transcriber, ["Treppe/Büro"])
+
+        assert result.accepted == ["Treppe Büro"]
+        assert result.rejected == []
+        assert result.applied[0].status == STATUS_SPEECH_FALLBACK
+        assert result.applied[0].original == "Treppe/Büro"
+        assert result.applied[0].final == "Treppe Büro"
+
+    def test_original_kept_when_model_accepts_it_despite_separator(self):
+        """If the loaded model actually accepts a separator character, the
+        original form is kept unchanged -- '/' is never stripped
+        pre-emptively before the real model has had a chance to accept it."""
+        transcriber = _FakeMoonshineTranscriber()  # nothing is incompatible
+
+        result = apply_safe_keyterms(transcriber, ["Treppe/Büro"])
+
+        assert result.accepted == ["Treppe/Büro"]
+        assert result.applied[0].status == STATUS_UNCHANGED
+
+    def test_soft_hyphen_is_normalized_before_any_native_call_and_deduped(self):
+        """Fall (soft hyphen): 'Wasch\\xadmaschine' is fixed at stage 1
+        (lossless normalization), so it never even reaches the tokenizer as
+        the broken form -- and duplicates with a clean 'Waschmaschine'
+        candidate collapse into a single keyterm."""
+        transcriber = _FakeMoonshineTranscriber()
+        candidates = ["Wasch­maschine", "Waschmaschine"]
+
+        result = apply_safe_keyterms(transcriber, candidates)
+
+        assert result.accepted == ["Waschmaschine"]
+        assert result.rejected == []
+        # The native call never saw the soft hyphen -- normalization
+        # happens purely in Python, before any set_keyterms() call.
+        assert all("­" not in term for call in transcriber.calls for term in call)
+        normalized_entries = [a for a in result.applied if a.status == STATUS_NORMALIZED]
+        assert len(normalized_entries) == 1
+        assert normalized_entries[0].original == "Wasch­maschine"
+        assert normalized_entries[0].final == "Waschmaschine"
+
+    def test_emoji_with_variation_selector_recovers_via_speech_fallback(self):
+        """Fall: 'Familie ⚠️' (WARNING SIGN + VARIATION
+        SELECTOR-16) is rejected as-is, but the speech-fallback 'Familie'
+        (emoji and variation selector both stripped) is accepted."""
+        transcriber = _FakeMoonshineTranscriber(incompatible_terms={"Familie ⚠️"})
+
+        result = apply_safe_keyterms(transcriber, ["Familie ⚠️"])
+
+        assert result.accepted == ["Familie"]
+        assert result.applied[0].status == STATUS_SPEECH_FALLBACK
+        assert result.applied[0].final == "Familie"
+
+    def test_emoji_only_term_with_nothing_left_is_rejected_not_sent_empty(self):
+        """A term that is nothing but an emoji collapses to an empty speech
+        fallback -- it must be rejected, never sent to the model as ''."""
+        transcriber = _FakeMoonshineTranscriber(incompatible_terms={"⚠️"})
+
+        result = apply_safe_keyterms(transcriber, ["⚠️"])
+
+        assert result.accepted == []
+        assert [r.term for r in result.rejected] == ["⚠️"]
+        # No call was ever made with an empty string.
+        assert all("" not in call for call in transcriber.calls)
 
 
 class TestBasicValidation:
@@ -280,3 +381,80 @@ class TestNormalizeKeyterm:
     def test_does_not_transliterate_umlauts(self):
         assert normalize_keyterm("Büro") == "Büro"
         assert normalize_keyterm("Büro") != "Buro"
+
+
+class TestNormalizeKeytermFormatCharacters:
+    def test_soft_hyphen_removed_real_production_case(self):
+        """Real production incident: the entity name contained U+00AD SOFT
+        HYPHEN between 'h' and 'm', invisible in normal display. Built with
+        the actual codepoint (\u00ad), not a visually copy-pasted string,
+        so the test is unambiguous about what character is present."""
+        assert normalize_keyterm("Wasch\u00admaschine") == "Waschmaschine"
+
+    def test_zero_width_space_removed(self):
+        assert normalize_keyterm("Wohn\u200bzimmer") == "Wohnzimmer"
+
+    def test_zero_width_non_joiner_and_joiner_removed(self):
+        assert normalize_keyterm("Test\u200c\u200dWort") == "TestWort"
+
+    def test_word_joiner_removed(self):
+        assert normalize_keyterm("Test\u2060Wort") == "TestWort"
+
+    def test_byte_order_mark_removed(self):
+        assert normalize_keyterm("K\ufeffuche".replace("uche", "\u00fcche")) == "K\u00fcche"
+
+    def test_soft_hyphen_removal_does_not_merge_separate_words(self):
+        """Only the invisible format character is removed -- an actual
+        space between two words is never touched."""
+        assert normalize_keyterm("Wohn\u00ad zimmer") == "Wohn zimmer"
+
+    def test_internal_whitespace_is_collapsed(self):
+        assert normalize_keyterm("Rollladen   S\u00fcd") == "Rollladen S\u00fcd"
+
+    def test_normal_german_terms_are_never_touched(self):
+        for term in [
+            "B\u00fcro",
+            "K\u00fcche",
+            "Au\u00dfenlicht",
+            "G\u00e4ste-WC",
+            "J\u00fcrgens Lampe",
+            "Temperatur 2",
+            "Rollladen S\u00fcd",
+        ]:
+            assert normalize_keyterm(term) == term
+
+
+class TestGenerateSpeechFallback:
+    def test_slash_becomes_space(self):
+        assert _generate_speech_fallback("Treppe/B\u00fcro") == "Treppe B\u00fcro"
+
+    def test_backslash_and_pipe_become_space(self):
+        assert _generate_speech_fallback("A\\B") == "A B"
+        assert _generate_speech_fallback("A|B") == "A B"
+
+    def test_emoji_stripped(self):
+        assert _generate_speech_fallback("Garage \U0001f697") == "Garage"
+
+    def test_emoji_with_variation_selector_fully_stripped(self):
+        """The variation selector (U+FE0F) must not survive on its own once
+        the base emoji character is removed."""
+        result = _generate_speech_fallback("Familie \u26a0\ufe0f")
+        assert result == "Familie"
+        assert "\ufe0f" not in result
+
+    def test_emoji_only_input_becomes_empty(self):
+        assert _generate_speech_fallback("\u26a0\ufe0f") == ""
+
+    def test_german_characters_never_touched(self):
+        for term in [
+            "B\u00fcro",
+            "K\u00fcche",
+            "Au\u00dfenlicht",
+            "G\u00e4ste-WC",
+            "J\u00fcrgens Lampe",
+        ]:
+            assert _generate_speech_fallback(term) == term
+
+    def test_digits_and_hyphen_preserved(self):
+        assert _generate_speech_fallback("Temperatur 2") == "Temperatur 2"
+        assert _generate_speech_fallback("G\u00e4ste-WC") == "G\u00e4ste-WC"

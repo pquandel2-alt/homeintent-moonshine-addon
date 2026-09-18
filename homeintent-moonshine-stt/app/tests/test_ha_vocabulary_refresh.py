@@ -272,3 +272,30 @@ class TestRefreshSurvivesIncompatibleKeyterm:
 
         # The second, fully-valid cycle ran and updated last-known-good.
         assert last_known_good == ["Wohnzimmer", "Küche"]
+
+    @pytest.mark.asyncio
+    async def test_separator_composite_term_recovers_via_speech_fallback(self, monkeypatch):
+        """A composite Area+Entity term with a '/' in the area name (e.g.
+        Area 'EG/Büro' + Entity 'Licht' -> 'EG/Büro Licht') is rejected as
+        this exact form by the loaded model but recovered as 'EG Büro
+        Licht' via the same speech-fallback path used everywhere else --
+        the refresh keeps running and does not lose the entity entirely."""
+        transcriber = _FakeMoonshineTranscriber(incompatible_terms={"EG/Büro Licht"})
+        last_known_good = ["Wohnzimmer"]
+
+        await _run_one_refresh_iteration(
+            monkeypatch,
+            [HaVocabularyResult(success=True, terms=["Wohnzimmer", "EG/Büro Licht"])],
+            transcriber,
+            manual_keyterms=[],
+            last_known_good_terms=last_known_good,
+            lock=asyncio.Lock(),
+        )
+
+        final_call = transcriber.set_keyterms_calls[-1]
+        assert "EG/Büro Licht" not in final_call
+        assert "EG Büro Licht" in final_call
+        assert "Wohnzimmer" in final_call
+        # The raw HA fetch result (not the fallback-rewritten form) is what
+        # gets committed as last-known-good.
+        assert last_known_good == ["Wohnzimmer", "EG/Büro Licht"]

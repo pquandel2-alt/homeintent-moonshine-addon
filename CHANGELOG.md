@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.6] - 2026-09-18
+
+Follow-up to v0.2.5: keyterms that were still being discarded entirely
+because of an invisible formatting character (soft hyphen) or a
+decorative symbol/separator (emoji, `/`) are now recovered via a two-stage
+normalize-then-speech-fallback pipeline instead of being skipped -- e.g.
+`"Wasch\xadmaschine"` -> `"Waschmaschine"`, `"Treppe/Büro"` ->
+`"Treppe Büro"`, `"Familie ⚠️"` -> `"Familie"`. Every fallback is still
+validated against the actually loaded Moonshine model before use. No
+other behavior changes.
+
+See `homeintent-moonshine-stt/CHANGELOG.md` and `ABSCHLUSSBERICHT_V0.2.6.md` for full details.
+
 ## [0.2.5] - 2026-09-18
 
 Critical production bug fix: a single Home-Assistant-derived keyterm the

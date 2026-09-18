@@ -1,5 +1,55 @@
 # Changelog - HomeIntent Moonshine Voice Add-on
 
+## [0.2.6] - 2026-09-18
+
+Follow-up to v0.2.5's safe-keyterm fix, driven by real production log
+output: several real HA-derived keyterms were still being discarded
+entirely even though they were fully recoverable -- an invisible
+formatting character or a decorative symbol/separator, not the underlying
+German word, was what the tokenizer actually rejected. See
+`ABSCHLUSSBERICHT_V0.2.6.md` for the full report.
+
+### Added
+- **Two-stage keyterm normalization** in `apply_safe_keyterms()`
+  (`app/keyterms.py`):
+  - Stage 1 (`normalize_keyterm()`, lossless, applied to every candidate
+    before any native call): in addition to NFC composition and
+    whitespace trimming, invisible Unicode *format* characters (category
+    `Cf` -- soft hyphen U+00AD, zero-width space/joiners, word joiner,
+    byte-order-mark) are now removed and internal whitespace is
+    collapsed. Real production case: `"Wasch\xadmaschine"` (a soft hyphen
+    between "h" and "m", invisible in the HA UI) now normalizes to
+    `"Waschmaschine"` before ever reaching the tokenizer.
+  - Stage 2 (`_generate_speech_fallback()`, only tried after the loaded
+    model's tokenizer has actually rejected the stage-1 term): visual
+    separators (`/`, `\`, `|`) become a space, and emoji/decorative
+    symbols plus variation selectors are dropped. The result is
+    re-validated against the real model with one more native call --
+    never assumed valid. Real production cases:
+    `"Treppe/Büro"` -> `"Treppe Büro"`, `"Familie ⚠️"` -> `"Familie"`.
+  - A term where nothing speech-relevant remains after stage 2 (e.g. an
+    emoji-only entry) is rejected rather than sent to the model as an
+    empty string.
+  - Applies uniformly to HA vocabulary (including Area+Entity composite
+    terms), manual `extra_keyterms`, and the periodic refresh, since all
+    three already funnel through this one function.
+- Startup/refresh logging now distinguishes unchanged, normalized, and
+  speech-fallback-recovered keyterms (each capped and summarized the same
+  way rejections already were), plus a one-line summary:
+  `Moonshine keyterms: candidate=N unchanged=N normalized=N
+  speech-fallback=N rejected=N applied=N`.
+
+### Investigated, not changed
+- The native Moonshine C library's own stderr diagnostics during
+  bisection (`No match found for remaining bytes ...`,
+  `moonshine_transcriber_set_keyterms(): Failed to set key terms ...`)
+  come directly from the compiled library, not from Python logging, and
+  could not be suppressed without risking hiding a genuine unrelated
+  native error; the additional per-term fallback validation call adds at
+  most one more such native attempt per already-failing term (not per
+  otherwise-valid term), so the extra noise is bounded by the number of
+  actually incompatible terms.
+
 ## [0.2.5] - 2026-09-18
 
 Critical production bug fix. See `ABSCHLUSSBERICHT_V0.2.5.md` for the full

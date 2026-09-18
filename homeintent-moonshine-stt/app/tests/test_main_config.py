@@ -316,13 +316,18 @@ class TestKeytermCrashRegression:
 
     def test_startup_survives_when_every_keyterm_is_incompatible(self):
         """Fall D: STT is more important than keyterm biasing -- the
-        service must still start with biasing simply turned off."""
+        service must still start with biasing simply turned off. The
+        speech-fallback variants ("Büro", "Foo", with the separator turned
+        into a space) are also marked incompatible here so this genuinely
+        exercises full rejection rather than fallback recovery."""
         from app.__main__ import _load_and_bias_transcriber
 
         args = _parse([])
         args.use_ha_vocabulary = False
         args.extra_keyterms = "/Büro,\\Foo"
-        transcriber = _FakeMoonshineTranscriberForMain(incompatible_terms={"/Büro", "\\Foo"})
+        transcriber = _FakeMoonshineTranscriberForMain(
+            incompatible_terms={"/Büro", "\\Foo", "Büro", "Foo"}
+        )
 
         with patch("app.__main__.load_transcriber", return_value=transcriber):
             result = _load_and_bias_transcriber(args)
