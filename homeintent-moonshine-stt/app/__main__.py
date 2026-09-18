@@ -13,7 +13,7 @@ from wyoming.server import AsyncTcpServer
 from app.debug_audio import DEFAULT_DEBUG_AUDIO_DIR
 from app.ha_vocabulary import fetch_ha_vocabulary
 from app.handler import MoonshineAsrHandler
-from app.keyterms import apply_safe_keyterms, merge_keyterms, parse_extra_keyterms
+from app.keyterms import merge_keyterms, parse_extra_keyterms
 from app.kokoro_session import KokoroOnnxSynthesizer
 from app.kokoro_tts import (
     DEFAULT_KOKORO_REVISION,
@@ -21,6 +21,8 @@ from app.kokoro_tts import (
     KokoroModelDownloadError,
     load_kokoro_model,
 )
+from app.kroko_engine import KrokoSttEngine, load_kroko_engine
+from app.kroko_model import KrokoModelDownloadError
 from app.models import (
     DEFAULT_DECODE_INCOMPLETE_LINES,
     DEFAULT_KEYTERM_BOOST,
@@ -28,6 +30,15 @@ from app.models import (
     DEFAULT_TRANSCRIPTION_INTERVAL,
     DEFAULT_VAD_THRESHOLD,
     load_transcriber,
+)
+from app.moonshine_engine import MoonshineSttEngine
+from app.stt_engine import SttEngine
+from app.supertonic_session import SupertonicSynthesizer
+from app.supertonic_tts import (
+    DEFAULT_SUPERTONIC_STEPS,
+    DEFAULT_SUPERTONIC_VOICE,
+    SupertonicModelDownloadError,
+    load_supertonic_tts,
 )
 from app.tts import DEFAULT_TTS_VOICE, GermanTtsModel, load_tts_model
 from app.tts_engine import TtsSynthesizer
@@ -40,6 +51,11 @@ from app.validation import (
     validate_kokoro_sentence_pause,
     validate_kokoro_speed,
     validate_kokoro_threads,
+    validate_kroko_threads,
+    validate_stt_engine,
+    validate_supertonic_speed,
+    validate_supertonic_steps,
+    validate_supertonic_threads,
     validate_transcription_interval,
     validate_tts_engine,
     validate_tts_threads,
@@ -54,7 +70,7 @@ logging.basicConfig(
 )
 _LOGGER = logging.getLogger(__name__)
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -69,9 +85,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--stt-enabled",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Enable Moonshine speech-to-text",
+        help="Enable speech-to-text (engine selected via --stt-engine)",
     )
-    parser.add_argument("--model", choices=["tiny", "small"], default="small")
+    parser.add_argument(
+        "--stt-engine",
+        choices=["moonshine", "kroko"],
+        # MUST default to moonshine: an existing installation's persisted
+        # options.json predates this option entirely, and Supervisor's own
+        # schema-default resolution is not something this add-on can
+        # inspect from here -- rootfs's run script has its own identical
+        # config_or_default() fallback (see that script), so a missing key
+        # resolves to "moonshine" through two independent paths, not just
+        # one. Upgrading must never silently switch a working Moonshine
+        # setup to a different, undownloaded engine.
+        default="moonshine",
+        help="Which STT engine to use when stt_enabled (default: moonshine)",
+    )
+    parser.add_argument(
+        "--model",
+        choices=["tiny", "small"],
+        default="small",
+        help="Moonshine model size (ignored for stt_engine=kroko)",
+    )
     parser.add_argument("--language", default="de")
     parser.add_argument(
         "--log-transcripts",
@@ -105,6 +140,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--save-debug-audio", action="store_true", default=False)
     parser.add_argument("--debug-audio-max-files", type=int, default=100)
+    parser.add_argument(
+        "--kroko-threads",
+        type=int,
+        default=1,
+        help="sherpa-onnx CPU threads for the Kroko recognizer (ignored for stt_engine=moonshine)",
+    )
+    parser.add_argument(
+        "--kroko-hotwords-score",
+        type=float,
+        default=1.5,
+        help="sherpa-onnx hotwords_score for Kroko keyterm/HA-vocabulary biasing",
+    )
 
     parser.add_argument(
         "--tts-enabled",
@@ -118,7 +165,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--tts-engine",
-        choices=["pocket_tts", "kokoro_onnx"],
+        choices=["pocket_tts", "kokoro_onnx", "supertonic_3"],
         # MUST default to pocket_tts: an existing v0.2.7 installation's
         # persisted options.json predates this option entirely. This add-on
         # cannot inspect Supervisor's own closed-source schema-upgrade code
@@ -201,6 +248,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Git revision of the Kokoro German model repo to download (advanced)",
     )
 
+    parser.add_argument(
+        "--supertonic-voice",
+        default=DEFAULT_SUPERTONIC_VOICE,
+        help="Supertonic 3 voice name (M1-M5/F1-F5) or numeric sid 0-9 "
+        "(ignored for other tts_engine values)",
+    )
+    parser.add_argument(
+        "--supertonic-speed",
+        type=float,
+        default=1.0,
+        help="Supertonic 3 speech speed (larger = faster)",
+    )
+    parser.add_argument(
+        "--supertonic-steps",
+        type=int,
+        default=DEFAULT_SUPERTONIC_STEPS,
+        help="Supertonic 3 denoising steps (8=default/balanced, 10=higher quality per "
+        "upstream's own documented example; higher = slower)",
+    )
+    parser.add_argument(
+        "--supertonic-threads",
+        type=int,
+        default=1,
+        help="sherpa-onnx CPU threads for Supertonic 3",
+    )
+
     return parser
 
 
@@ -213,6 +286,7 @@ def _load_json_config_overrides(args: argparse.Namespace) -> bool:
             config = json.load(f)
         for key in (
             "stt_enabled",
+            "stt_engine",
             "model",
             "language",
             "debug",
@@ -227,6 +301,8 @@ def _load_json_config_overrides(args: argparse.Namespace) -> bool:
             "decode_incomplete_lines",
             "save_debug_audio",
             "debug_audio_max_files",
+            "kroko_threads",
+            "kroko_hotwords_score",
             "tts_enabled",
             "tts_engine",
             "tts_model",
@@ -239,6 +315,10 @@ def _load_json_config_overrides(args: argparse.Namespace) -> bool:
             "kokoro_threads",
             "kokoro_sentence_pause",
             "kokoro_clause_pause",
+            "supertonic_voice",
+            "supertonic_speed",
+            "supertonic_steps",
+            "supertonic_threads",
         ):
             if key in config:
                 setattr(args, key.replace("-", "_"), config[key])
@@ -249,7 +329,7 @@ def _load_json_config_overrides(args: argparse.Namespace) -> bool:
 
 
 async def _refresh_ha_vocabulary_periodically(
-    transcriber: object,
+    stt_engine: SttEngine,
     manual_keyterms: list[str],
     interval_minutes: int,
     last_known_good_terms: list[str],
@@ -310,14 +390,13 @@ async def _refresh_ha_vocabulary_periodically(
         candidate_effective = merge_keyterms(candidate_ha_terms, manual_keyterms)
         previous_effective = merge_keyterms(last_known_good_terms, manual_keyterms)
         async with moonshine_lock:
-            apply_result = await asyncio.to_thread(
-                apply_safe_keyterms,
-                transcriber,  # type: ignore[arg-type]
+            accepted, apply_succeeded = await asyncio.to_thread(
+                stt_engine.set_keyterms,
                 candidate_effective,
                 previous_effective,
             )
 
-        if not apply_result.apply_succeeded:
+        if not apply_succeeded:
             _LOGGER.error(
                 "HA vocabulary refresh: applying the new keyterm list failed unexpectedly; "
                 "keeping last-known-good vocabulary (%d term(s))",
@@ -329,7 +408,7 @@ async def _refresh_ha_vocabulary_periodically(
         _LOGGER.info(
             "Refreshed Home Assistant vocabulary: ha_terms=%d effective keyterms=%d",
             len(last_known_good_terms),
-            len(apply_result.accepted),
+            len(accepted),
         )
 
 
@@ -342,11 +421,16 @@ def _validate_args(args: argparse.Namespace) -> bool:
         validate_debug_audio_max_files(args.debug_audio_max_files)
         validate_ha_vocabulary_refresh_minutes(args.ha_vocabulary_refresh_minutes)
         validate_tts_threads(args.tts_threads)
+        validate_stt_engine(args.stt_engine)
         validate_tts_engine(args.tts_engine)
         validate_kokoro_speed(args.kokoro_speed)
         validate_kokoro_threads(args.kokoro_threads)
         validate_kokoro_sentence_pause(args.kokoro_sentence_pause)
         validate_kokoro_clause_pause(args.kokoro_clause_pause)
+        validate_kroko_threads(args.kroko_threads)
+        validate_supertonic_speed(args.supertonic_speed)
+        validate_supertonic_steps(args.supertonic_steps)
+        validate_supertonic_threads(args.supertonic_threads)
     except ValueError as e:
         _LOGGER.error(f"Invalid configuration: {e}")
         return False
@@ -380,7 +464,11 @@ def _log_startup_banner(
     _LOGGER.info("HomeIntent Moonshine Voice v%s", VERSION)
     _LOGGER.info("STT: enabled=%s", args.stt_enabled)
     if args.stt_enabled:
-        _LOGGER.info("STT: engine=Moonshine model=%s language=%s", args.model, args.language)
+        _LOGGER.info("STT: engine=%s", args.stt_engine)
+        if args.stt_engine == "kroko":
+            _LOGGER.info("STT: language=%s threads=%d", args.language, args.kroko_threads)
+        else:
+            _LOGGER.info("STT: model=%s language=%s", args.model, args.language)
         _LOGGER.info("STT: HA vocabulary=%s", "enabled" if args.use_ha_vocabulary else "disabled")
         _LOGGER.info("STT: manual keyterms=%d", len(manual_keyterms))
         _LOGGER.info("STT: effective keyterms=%d", len(effective_keyterms))
@@ -404,25 +492,35 @@ def _log_startup_banner(
                 if args.kokoro_threads == 0
                 else str(args.kokoro_threads),
             )
+            _LOGGER.info("TTS: sample rate=24000 Hz")
+        elif args.tts_engine == "supertonic_3":
+            _LOGGER.info(
+                "TTS: model=supertonic-3-int8 voice=%s runtime=sherpa-onnx (ONNX Runtime) "
+                "speed=%s steps=%d threads=%d",
+                args.supertonic_voice,
+                args.supertonic_speed,
+                args.supertonic_steps,
+                args.supertonic_threads,
+            )
         else:
             _LOGGER.info("TTS: model=%s voice=%s runtime=PyTorch", args.tts_model, args.tts_voice)
             _LOGGER.info(
                 "TTS: threads=%s",
                 "auto (PyTorch default)" if args.tts_threads == 0 else str(args.tts_threads),
             )
-        _LOGGER.info("TTS: sample rate=24000 Hz")
+            _LOGGER.info("TTS: sample rate=24000 Hz")
 
 
 def _build_handler_factory(
     args: argparse.Namespace,
-    transcriber: object | None,
+    stt_engine: SttEngine | None,
     moonshine_lock: asyncio.Lock,
     tts_synthesizer: TtsSynthesizer | None,
 ) -> partial:  # type: ignore[type-arg]
     return partial(
         MoonshineAsrHandler,
-        transcriber=transcriber,
-        model_name=args.model if args.stt_enabled else "",
+        stt_engine=stt_engine,
+        model_name=stt_engine.model_display_name if stt_engine is not None else "",
         language=args.language,
         log_transcripts=args.log_transcripts,
         log_performance=args.log_performance,
@@ -441,7 +539,7 @@ def _load_pocket_tts_synthesizer(args: argparse.Namespace) -> PocketTtsSynthesiz
     voice, and optionally warm it up. Returns None on failure.
 
     A load or voice-resolution failure here is treated as fatal (like a
-    Moonshine load failure in _load_and_bias_transcriber()) rather than
+    Moonshine load failure in _load_and_bias_stt_engine()) rather than
     silently falling back to "no TTS": the user explicitly opted into
     tts_enabled with a specific tts_voice, so failing loudly at startup is
     more useful than a working add-on that only discovers an invalid voice
@@ -523,22 +621,65 @@ def _load_kokoro_synthesizer(args: argparse.Namespace) -> KokoroOnnxSynthesizer 
     return synthesizer
 
 
+def _load_supertonic_synthesizer(args: argparse.Namespace) -> SupertonicSynthesizer | None:
+    """Resolve/download the Supertonic 3 model, validate the configured
+    voice, and optionally warm it up. Returns None on failure.
+
+    Same fail-loudly philosophy as the other two TTS loaders: a download
+    failure or an invalid ``supertonic_voice`` is a fatal, clearly logged
+    startup error -- never a silent fallback to Pocket TTS/Kokoro.
+    """
+    try:
+        tts = load_supertonic_tts(num_threads=args.supertonic_threads)
+    except SupertonicModelDownloadError as e:
+        _LOGGER.error(f"Failed to download/load Supertonic 3 model: {e}")
+        return None
+    except Exception as e:
+        _LOGGER.error(f"Failed to load Supertonic 3 model: {e}")
+        return None
+
+    synthesizer = SupertonicSynthesizer(
+        tts,
+        default_voice=args.supertonic_voice,
+        speed=args.supertonic_speed,
+        num_steps=args.supertonic_steps,
+        language=args.language,
+    )
+    try:
+        asyncio.run(synthesizer.preload_default_voice())
+    except Exception as e:
+        _LOGGER.error(f"Failed to resolve Supertonic voice '{args.supertonic_voice}': {e}")
+        return None
+
+    if args.tts_warmup:
+        try:
+            elapsed = asyncio.run(synthesizer.warmup())
+            _LOGGER.info("Supertonic 3 warmup completed in %.2fs", elapsed)
+        except Exception as e:
+            _LOGGER.warning("Supertonic 3 warmup failed (continuing without it): %s", e)
+
+    return synthesizer
+
+
 def _load_tts_synthesizer(args: argparse.Namespace) -> TtsSynthesizer | None:
     """Dispatch to the configured engine's own loader. Returns None on
     failure (see each loader's own docstring -- never a silent fallback to
-    the other engine)."""
+    another engine)."""
     if args.tts_engine == "kokoro_onnx":
         return _load_kokoro_synthesizer(args)
+    if args.tts_engine == "supertonic_3":
+        return _load_supertonic_synthesizer(args)
     return _load_pocket_tts_synthesizer(args)
 
 
-def _load_and_bias_transcriber(
+def _load_moonshine_engine(
     args: argparse.Namespace,
-) -> tuple[object, list[str], list[str], list[str]] | None:
-    """Load the transcriber and apply keyterm biasing. Returns None on failure.
+) -> tuple[MoonshineSttEngine, list[str], list[str], list[str]] | None:
+    """Load the Moonshine transcriber and apply keyterm biasing. Returns
+    None on failure.
 
-    Returns (transcriber, manual_keyterms, ha_terms, accepted_keyterms) so
-    the caller can seed the periodic refresh loop's last-known-good HA
+    Returns (engine, manual_keyterms, ha_terms, accepted_keyterms) so the
+    caller can seed the periodic refresh loop's last-known-good HA
     vocabulary with exactly what was actually fetched at startup, and log
     the real, post-validation effective keyterm count.
 
@@ -565,11 +706,52 @@ def _load_and_bias_transcriber(
         _LOGGER.error(f"Failed to load model: {e}")
         return None
 
+    engine = MoonshineSttEngine(transcriber, args.model, args.language)
     manual_keyterms, ha_terms = _resolve_keyterms(args)
     effective_keyterms = merge_keyterms(ha_terms, manual_keyterms)
-    result = apply_safe_keyterms(transcriber, effective_keyterms)
+    accepted, _ = engine.set_keyterms(effective_keyterms)
 
-    return transcriber, manual_keyterms, ha_terms, result.accepted
+    return engine, manual_keyterms, ha_terms, accepted
+
+
+def _load_kroko_engine(
+    args: argparse.Namespace,
+) -> tuple[KrokoSttEngine, list[str], list[str], list[str]] | None:
+    """Resolve/download the Kroko German model and apply keyterm/HA-vocabulary
+    biasing via sherpa-onnx hotwords. Returns None on failure.
+
+    Same fail-loudly philosophy as the TTS engine loaders: a download or
+    load failure is a fatal, clearly logged startup error -- the user
+    explicitly chose ``stt_engine: kroko``, so silently falling back to
+    Moonshine would hide a real configuration/network problem.
+    """
+    try:
+        engine = load_kroko_engine(
+            num_threads=args.kroko_threads,
+            hotwords_score=args.kroko_hotwords_score,
+        )
+    except KrokoModelDownloadError as e:
+        _LOGGER.error(f"Failed to download/load Kroko model: {e}")
+        return None
+    except Exception as e:
+        _LOGGER.error(f"Failed to load Kroko model: {e}")
+        return None
+
+    manual_keyterms, ha_terms = _resolve_keyterms(args)
+    effective_keyterms = merge_keyterms(ha_terms, manual_keyterms)
+    accepted, _ = engine.set_keyterms(effective_keyterms)
+
+    return engine, manual_keyterms, ha_terms, accepted
+
+
+def _load_and_bias_stt_engine(
+    args: argparse.Namespace,
+) -> tuple[SttEngine, list[str], list[str], list[str]] | None:
+    """Dispatch to the configured STT engine's own loader. Returns None on
+    failure (see each loader's own docstring)."""
+    if args.stt_engine == "kroko":
+        return _load_kroko_engine(args)
+    return _load_moonshine_engine(args)
 
 
 class _LoadedEngines:
@@ -577,13 +759,13 @@ class _LoadedEngines:
 
     def __init__(
         self,
-        transcriber: object | None,
+        stt_engine: SttEngine | None,
         manual_keyterms: list[str],
         initial_ha_terms: list[str],
         accepted_keyterms: list[str],
         tts_synthesizer: TtsSynthesizer | None,
     ) -> None:
-        self.transcriber = transcriber
+        self.stt_engine = stt_engine
         self.manual_keyterms = manual_keyterms
         self.initial_ha_terms = initial_ha_terms
         self.accepted_keyterms = accepted_keyterms
@@ -596,15 +778,15 @@ def _load_engines(args: argparse.Namespace) -> _LoadedEngines | None:
         _LOGGER.error("Both stt_enabled and tts_enabled are false; nothing to serve")
         return None
 
-    transcriber: object | None = None
+    stt_engine: SttEngine | None = None
     manual_keyterms: list[str] = []
     initial_ha_terms: list[str] = []
     accepted_keyterms: list[str] = []
     if args.stt_enabled:
-        loaded = _load_and_bias_transcriber(args)
+        loaded = _load_and_bias_stt_engine(args)
         if loaded is None:
             return None
-        transcriber, manual_keyterms, initial_ha_terms, accepted_keyterms = loaded
+        stt_engine, manual_keyterms, initial_ha_terms, accepted_keyterms = loaded
 
     tts_synthesizer: TtsSynthesizer | None = None
     if args.tts_enabled:
@@ -613,7 +795,7 @@ def _load_engines(args: argparse.Namespace) -> _LoadedEngines | None:
             return None
 
     return _LoadedEngines(
-        transcriber, manual_keyterms, initial_ha_terms, accepted_keyterms, tts_synthesizer
+        stt_engine, manual_keyterms, initial_ha_terms, accepted_keyterms, tts_synthesizer
     )
 
 
@@ -635,7 +817,7 @@ def main() -> int:
     engines = _load_engines(args)
     if engines is None:
         return 1
-    transcriber = engines.transcriber
+    stt_engine = engines.stt_engine
     manual_keyterms = engines.manual_keyterms
     initial_ha_terms = engines.initial_ha_terms
     tts_synthesizer = engines.tts_synthesizer
@@ -650,17 +832,22 @@ def main() -> int:
     # app/tts_session.py) since it is an unrelated runtime with no shared
     # state -- an STT request never blocks on a TTS request or vice versa.
     moonshine_lock = asyncio.Lock()
-    handler_factory = _build_handler_factory(args, transcriber, moonshine_lock, tts_synthesizer)
+    handler_factory = _build_handler_factory(args, stt_engine, moonshine_lock, tts_synthesizer)
     server = AsyncTcpServer(args.host, args.port)
     _LOGGER.info(f"Starting Wyoming server on {args.host}:{args.port}")
 
     async def run_server() -> None:
         refresh_task: asyncio.Task[None] | None = None
-        if args.stt_enabled and args.use_ha_vocabulary and args.ha_vocabulary_refresh_minutes > 0:
+        if (
+            args.stt_enabled
+            and stt_engine is not None
+            and args.use_ha_vocabulary
+            and args.ha_vocabulary_refresh_minutes > 0
+        ):
             last_known_good_terms = list(initial_ha_terms)
             refresh_task = asyncio.create_task(
                 _refresh_ha_vocabulary_periodically(
-                    transcriber,
+                    stt_engine,
                     manual_keyterms,
                     args.ha_vocabulary_refresh_minutes,
                     last_known_good_terms,

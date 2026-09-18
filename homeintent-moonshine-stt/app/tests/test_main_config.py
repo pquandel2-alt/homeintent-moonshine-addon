@@ -110,7 +110,7 @@ class TestLoadEngines:
             engines = _load_engines(args)
 
         assert engines is not None
-        assert engines.transcriber is not None
+        assert engines.stt_engine is not None
         assert engines.tts_synthesizer is None
 
     def test_tts_only_loads_synthesizer_not_transcriber(self):
@@ -124,7 +124,7 @@ class TestLoadEngines:
             engines = _load_engines(args)
 
         assert engines is not None
-        assert engines.transcriber is None
+        assert engines.stt_engine is None
         assert engines.tts_synthesizer is not None
 
     def test_both_enabled_loads_both(self):
@@ -140,7 +140,7 @@ class TestLoadEngines:
             engines = _load_engines(args)
 
         assert engines is not None
-        assert engines.transcriber is not None
+        assert engines.stt_engine is not None
         assert engines.tts_synthesizer is not None
 
     def test_invalid_tts_model_fails_cleanly_not_crashing(self, tmp_path: Path):
@@ -223,15 +223,15 @@ class TestTtsVoiceValidationAndWarmup:
 class TestStartupBannerLoggedOnce:
     """Item 24: a real production log showed the full startup banner
     (version, STT/TTS config summary) printed TWICE -- once from inside
-    _load_and_bias_transcriber() (before Pocket TTS even started loading)
+    _load_and_bias_stt_engine() (before Pocket TTS even started loading)
     and once again from main() after everything finished loading. Only the
     second, fully-informed call (with the real tts_enabled/tts_synthesizer
     state) should ever run; loading itself should still emit its own
     incremental "Loading X..."/"X ready" lines (already logged by
     app/models.py and app/tts.py), just not a second full banner."""
 
-    def test_load_and_bias_transcriber_does_not_log_the_banner(self):
-        from app.__main__ import _load_and_bias_transcriber
+    def test_load_and_bias_stt_engine_does_not_log_the_banner(self):
+        from app.__main__ import _load_and_bias_stt_engine
 
         args = _parse([])
         args.use_ha_vocabulary = False
@@ -240,7 +240,7 @@ class TestStartupBannerLoggedOnce:
             patch("app.__main__._log_startup_banner") as mock_banner,
         ):
             mock_load.return_value = MagicMock()
-            result = _load_and_bias_transcriber(args)
+            result = _load_and_bias_stt_engine(args)
 
         assert result is not None
         mock_banner.assert_not_called()
@@ -298,7 +298,7 @@ class TestKeytermCrashRegression:
     apply_safe_keyterms() path, see app/tests/test_keyterms.py)."""
 
     def test_startup_does_not_crash_on_incompatible_manual_keyterm(self):
-        from app.__main__ import _load_and_bias_transcriber
+        from app.__main__ import _load_and_bias_stt_engine
 
         args = _parse([])
         args.use_ha_vocabulary = False
@@ -306,7 +306,7 @@ class TestKeytermCrashRegression:
         transcriber = _FakeMoonshineTranscriberForMain(incompatible_terms={"/Büro"})
 
         with patch("app.__main__.load_transcriber", return_value=transcriber):
-            result = _load_and_bias_transcriber(args)
+            result = _load_and_bias_stt_engine(args)
 
         assert result is not None  # startup does not fail
         _, _manual_keyterms, _ha_terms, accepted = result
@@ -320,7 +320,7 @@ class TestKeytermCrashRegression:
         speech-fallback variants ("Büro", "Foo", with the separator turned
         into a space) are also marked incompatible here so this genuinely
         exercises full rejection rather than fallback recovery."""
-        from app.__main__ import _load_and_bias_transcriber
+        from app.__main__ import _load_and_bias_stt_engine
 
         args = _parse([])
         args.use_ha_vocabulary = False
@@ -330,7 +330,7 @@ class TestKeytermCrashRegression:
         )
 
         with patch("app.__main__.load_transcriber", return_value=transcriber):
-            result = _load_and_bias_transcriber(args)
+            result = _load_and_bias_stt_engine(args)
 
         assert result is not None
         _, _, _, accepted = result

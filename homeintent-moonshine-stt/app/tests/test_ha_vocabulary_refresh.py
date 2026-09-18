@@ -20,6 +20,7 @@ from moonshine_voice import MoonshineError
 
 from app.__main__ import _refresh_ha_vocabulary_periodically
 from app.ha_vocabulary import HaVocabularyResult
+from app.moonshine_engine import MoonshineSttEngine
 
 
 class _FakeTranscriber:
@@ -70,9 +71,10 @@ async def _run_one_refresh_iteration(
     monkeypatch.setattr("app.__main__.asyncio.sleep", fake_sleep)
     monkeypatch.setattr("app.__main__.fetch_ha_vocabulary", fake_fetch)
 
+    engine = MoonshineSttEngine(transcriber, "small", "de")
     with pytest.raises(asyncio.CancelledError):
         await _refresh_ha_vocabulary_periodically(
-            transcriber, manual_keyterms, 30, last_known_good_terms, lock
+            engine, manual_keyterms, 30, last_known_good_terms, lock
         )
 
 

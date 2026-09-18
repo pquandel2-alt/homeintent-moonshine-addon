@@ -20,3 +20,14 @@ kokoro-onnx==0.6.1
 onnxruntime==1.30.0
 espeakng-loader==0.2.4
 phonemizer==3.4.0
+# Kroko STT (in-process streaming ASR) and Supertonic 3 TTS (in-process
+# callback-streaming TTS) both run through sherpa-onnx's own Python API --
+# see app/kroko_engine.py / app/supertonic_session.py. Ships its own
+# statically-linked onnxruntime build inside the native sherpa-onnx-core
+# wheel (verified: `pip show sherpa-onnx-core` depends on nothing else, and
+# the installed wheel bundles its own libonnxruntime.so) -- it never
+# imports Python's own `onnxruntime` package, so this does not conflict
+# with the onnxruntime==1.30.0 pin above (used only by Kokoro ONNX).
+# manylinux (amd64) and aarch64 wheels for Python 3.11 both verified
+# available on PyPI at this version.
+sherpa-onnx==1.13.8
