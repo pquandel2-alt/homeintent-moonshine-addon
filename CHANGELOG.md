@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.7] - 2026-09-18
+
+Real Wyoming TTS audio streaming to Home Assistant: the add-on now
+advertises and correctly implements `synthesize-start`/`-chunk`/`-stop`/
+`-stopped`, so Home Assistant plays audio as soon as Pocket TTS produces
+its first chunk instead of waiting for the entire response to buffer
+first (its legacy client behavior when streaming wasn't advertised, which
+was the actual, verified cause of the perceived TTS latency). A new
+`TtsStreamState` state machine guarantees the backwards-compatible
+duplicate full-text event Home Assistant also sends never causes text to
+be synthesized twice. Adds a new local `python -m app.tts_benchmark` CLI
+for tuning `tts_threads` on real hardware. No other behavior changes.
+
+See `homeintent-moonshine-stt/CHANGELOG.md` and `ABSCHLUSSBERICHT_V0.2.7.md` for full details.
+
 ## [0.2.6] - 2026-09-18
 
 Follow-up to v0.2.5: keyterms that were still being discarded entirely

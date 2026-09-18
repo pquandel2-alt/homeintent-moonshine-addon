@@ -20,7 +20,13 @@ from wyoming.info import (
     TtsVoice,
 )
 from wyoming.server import AsyncEventHandler
-from wyoming.tts import Synthesize
+from wyoming.tts import (
+    Synthesize,
+    SynthesizeChunk,
+    SynthesizeStart,
+    SynthesizeStop,
+    SynthesizeStopped,
+)
 
 from app.audio import float32_to_pcm_int16, pcm_int16_to_float32, validate_audio_format
 from app.debug_audio import DEFAULT_DEBUG_AUDIO_DIR, save_debug_audio
@@ -28,6 +34,7 @@ from app.models import get_model_info
 from app.streaming import MoonshineStreamingSession
 from app.tts import get_tts_model_info
 from app.tts_session import TtsSynthesisStats, TtsSynthesizer
+from app.tts_stream import TtsStreamPhase, TtsStreamState
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -82,6 +89,32 @@ class MoonshineAsrHandler(AsyncEventHandler):
     Key TTS design: audio-chunks are forwarded to the client as soon as
     Pocket TTS's own generate_audio_stream() yields them (see
     app/tts_session.py) -- not after synthesizing the whole utterance.
+
+    Wyoming streaming-TTS protocol (synthesize-start/-chunk/-stop): Home
+    Assistant's real Wyoming TTS client only uses this if the server
+    advertises ``supports_synthesize_streaming=True`` in its `describe`
+    response; otherwise it falls back to the old single-shot ``synthesize``
+    event and BUFFERS THE ENTIRE RESPONSE ITSELF before returning any audio
+    at all -- even though this add-on already streams internally, Home
+    Assistant would never see that until now (verified directly against
+    ``homeassistant/components/wyoming/tts.py`` upstream: its
+    ``async_get_tts_audio()``, used for the non-streaming case, loops until
+    ``audio-stop`` and only returns the fully-collected WAV afterward). This
+    was the actual, verified root cause of the perceived TTS latency, not
+    Pocket TTS itself.
+
+    With streaming enabled, real Home Assistant sends
+    ``synthesize-start``, one or more ``synthesize-chunk``, then the
+    ENTIRE message again via a backwards-compatible ``synthesize`` event,
+    then ``synthesize-stop`` -- see app/tts_stream.py's module docstring
+    for the full protocol analysis and why that backwards-compatible event
+    must never cause the text to be synthesized (and spoken) twice.
+    ``self._tts_stream_state`` (a :class:`TtsStreamState`) is what
+    prevents that. Home Assistant's streaming reader loop
+    (``_read_tts_audio()``) only terminates on a ``synthesize-stopped``
+    event (verified from the same upstream source -- a plain
+    ``audio-stop`` is not enough to end that particular loop), so every
+    streaming request must end with one.
     """
 
     def __init__(
@@ -152,6 +185,9 @@ class MoonshineAsrHandler(AsyncEventHandler):
         self._audio_rejected = False
         self._raw_audio_buffer: bytearray | None = None
 
+        self._tts_stream_state = TtsStreamState()
+        self._tts_stream_requested_at: float | None = None
+
     async def handle_event(self, event: Event) -> bool:
         """Main event handler for the Wyoming STT and TTS lifecycles.
 
@@ -159,7 +195,8 @@ class MoonshineAsrHandler(AsyncEventHandler):
         - describe: Service discovery (ASR and/or TTS, whichever enabled)
         - transcribe: Start a new STT transcription
         - audio-start/chunk/stop: STT audio stream lifecycle
-        - synthesize: A TTS request (single-shot text -> audio-chunk stream)
+        - synthesize(-start/-chunk/-stop): TTS requests, legacy single-shot
+          or streaming (see _dispatch_tts_event())
         """
         try:
             match event.type:
@@ -178,8 +215,8 @@ class MoonshineAsrHandler(AsyncEventHandler):
                 case "audio-stop":
                     await self._handle_audio_stop()
 
-                case "synthesize":
-                    await self._handle_synthesize(event)
+                case "synthesize" | "synthesize-start" | "synthesize-chunk" | "synthesize-stop":
+                    await self._dispatch_tts_event(event)
 
                 case _:
                     _LOGGER.debug(f"Ignoring unsupported event type: {event.type}")
@@ -199,9 +236,13 @@ class MoonshineAsrHandler(AsyncEventHandler):
         in-flight TTS synthesis (see _handle_synthesize) is stopped by its
         own async-generator cleanup when the client disconnect surfaces as
         a write failure or a cancelled task -- there is no separate
-        long-lived TTS session object to release here.
+        long-lived TTS session object to release here. Also cancels any
+        in-progress streaming-TTS state so a disconnect mid-collection
+        (e.g. between synthesize-start and synthesize-stop) can never be
+        mistaken for a still-active request.
         """
         self._close_session()
+        self._tts_stream_state.cancel()
 
     async def _handle_describe(self) -> None:
         """Respond to service discovery request with whichever of ASR/TTS
@@ -247,11 +288,17 @@ class MoonshineAsrHandler(AsyncEventHandler):
                     description="HomeIntent Pocket TTS - German streaming TTS",
                     version=None,
                     voices=[tts_voice],
-                    # Only audio *output* is chunk-streamed (see
-                    # _handle_synthesize) -- incremental *text* input via
-                    # Wyoming's synthesize-start/-chunk/-stop protocol is
-                    # not implemented, so this stays false.
-                    supports_synthesize_streaming=False,
+                    # True: synthesize-start/-chunk/-stop are fully
+                    # implemented (see TtsStreamState/_handle_synthesize_*
+                    # below) and end every streaming request with
+                    # synthesize-stopped, which real Home Assistant's
+                    # streaming Wyoming TTS client requires to end its own
+                    # read loop (verified against
+                    # homeassistant/components/wyoming/tts.py upstream).
+                    # This is what makes Home Assistant use the streaming
+                    # client path at all instead of buffering the whole
+                    # response before returning any audio.
+                    supports_synthesize_streaming=True,
                 )
             )
 
@@ -468,23 +515,152 @@ class MoonshineAsrHandler(AsyncEventHandler):
             # thread to stop and releases its lock (see app/tts_session.py).
             await agen.aclose()
 
-    async def _handle_synthesize(self, event: Event) -> None:
-        """Handle a Wyoming TTS request: text in, streamed audio-chunks out.
+    async def _dispatch_tts_event(self, event: Event) -> None:
+        """Route one of the four Wyoming TTS event types to its handler.
 
-        Streams audio to the client as soon as Pocket TTS yields each chunk
-        (see app/tts_session.py) rather than buffering the whole utterance
-        first -- this is what keeps time-to-first-audio low.
+        Split out of handle_event() purely to keep that method's own
+        branching simple -- the actual legacy-vs-streaming decision lives
+        in _handle_synthesize()/TtsStreamState, not here.
+        """
+        match event.type:
+            case "synthesize":
+                await self._handle_synthesize(event)
+            case "synthesize-start":
+                await self._handle_synthesize_start(event)
+            case "synthesize-chunk":
+                await self._handle_synthesize_chunk(event)
+            case "synthesize-stop":
+                await self._handle_synthesize_stop(event)
+
+    async def _handle_synthesize(self, event: Event) -> None:
+        """Handle a Wyoming ``synthesize`` event.
+
+        This event has two distinct meanings depending on connection
+        state (see TtsStreamState/app/tts_stream.py):
+
+        - If a streaming request is being collected (synthesize-start
+          already seen), this is Home Assistant's backwards-compatible
+          "entire message again" event that always follows the last
+          synthesize-chunk. The text is already fully known at this
+          point -- ``begin_synthesis()`` triggers the actual synthesis
+          exactly once and returns None on any later, redundant call
+          (there is at most one legitimate call per streaming request).
+        - Otherwise, this is a legacy, single-shot request with no
+          preceding synthesize-start -- handled exactly as in prior
+          releases.
+        """
+        synthesize = Synthesize.from_event(event)
+
+        if self._tts_stream_state.phase is TtsStreamPhase.COLLECTING:
+            text = self._tts_stream_state.begin_synthesis(full_text=synthesize.text)
+            if text is None:
+                return  # already triggered; never synthesize/speak twice
+            voice_name = (
+                synthesize.voice.name if synthesize.voice else self._tts_stream_state.voice_name
+            )
+            requested_at = self._tts_stream_requested_at or time.monotonic()
+            await self._run_tts_synthesis(text, voice_name, "streaming", requested_at)
+            return
+
+        # Legacy, single-shot request: no synthesize-start preceded this.
+        voice_name = synthesize.voice.name if synthesize.voice else None
+        await self._run_tts_synthesis(synthesize.text, voice_name, "legacy", time.monotonic())
+
+    async def _handle_synthesize_start(self, event: Event) -> None:
+        """Handle synthesize-start: begin collecting a streaming request.
+
+        If TTS is disabled, answers immediately with an error and leaves
+        the stream state at IDLE (so the inevitable synthesize-chunk/
+        synthesize/synthesize-stop that follow are simply ignored/routed
+        to the ordinary "TTS disabled" error path instead of being
+        collected pointlessly).
         """
         if self._tts_synthesizer is None:
-            _LOGGER.warning("Received synthesize event but TTS is disabled (tts_enabled: false)")
+            _LOGGER.warning("Received synthesize-start but TTS is disabled (tts_enabled: false)")
             await self.write_event(
                 WyomingError(text="TTS is disabled on this add-on", code="tts_disabled").event()
             )
             return
 
-        synthesize = Synthesize.from_event(event)
-        text = synthesize.text
-        voice_name = synthesize.voice.name if synthesize.voice else None
+        start = SynthesizeStart.from_event(event)
+        voice_name = start.voice.name if start.voice else None
+        self._tts_stream_state.start(voice_name)
+        self._tts_stream_requested_at = time.monotonic()
+
+    async def _handle_synthesize_chunk(self, event: Event) -> None:
+        """Handle synthesize-chunk: accumulate one piece of streamed text.
+
+        Only ever used as a fallback text source for a purely
+        spec-following client that never sends the backwards-compatible
+        whole-message ``synthesize`` event (see _handle_synthesize) --
+        Pocket TTS itself has no incremental-text API to feed these to
+        as they arrive (verified against
+        ``pocket_tts.models.tts_model.TTSModel.generate_audio_stream()``;
+        see app/tts_stream.py's module docstring).
+        """
+        chunk = SynthesizeChunk.from_event(event)
+        if not self._tts_stream_state.add_chunk(chunk.text):
+            _LOGGER.warning(
+                "Received synthesize-chunk without an active synthesize-start; ignoring"
+            )
+
+    async def _handle_synthesize_stop(self, event: Event) -> None:
+        """Handle synthesize-stop: end of the streaming text input.
+
+        Only actually triggers synthesis if it hasn't already happened --
+        the normal Home Assistant case is that the backwards-compatible
+        ``synthesize`` event (handled in _handle_synthesize) already
+        triggered it by the time this arrives, in which case
+        ``begin_synthesis()`` returns None and this is a no-op. A purely
+        spec-following streaming client that never sends that
+        backwards-compatible event relies on synthesize-stop as the only
+        signal that the text is complete.
+        """
+        SynthesizeStop.from_event(event)  # no fields; parsed for validation/consistency
+
+        if self._tts_stream_state.phase is TtsStreamPhase.IDLE:
+            _LOGGER.warning("Received synthesize-stop without an active synthesize-start; ignoring")
+            return
+
+        text = self._tts_stream_state.begin_synthesis()
+        if text is None:
+            return  # already triggered by the backwards-compatible `synthesize` event
+
+        requested_at = self._tts_stream_requested_at or time.monotonic()
+        await self._run_tts_synthesis(
+            text, self._tts_stream_state.voice_name, "streaming", requested_at
+        )
+
+    async def _run_tts_synthesis(
+        self,
+        text: str,
+        voice_name: str | None,
+        protocol_mode: str,
+        requested_at: float,
+    ) -> None:
+        """Shared implementation for both the legacy single-shot
+        ``synthesize`` path and the streaming synthesize-start/-chunk/-stop
+        path: once the complete text to speak is known, run Pocket TTS and
+        forward audio-start/-chunk/-stop -- plus, for the streaming path,
+        a final synthesize-stopped, which real Home Assistant's streaming
+        Wyoming TTS client requires to end its own read loop (a plain
+        audio-stop is not enough there -- see this module's docstring).
+
+        ``protocol_mode`` is ``"legacy"`` or ``"streaming"`` -- purely for
+        ending the response correctly and for the performance log; the
+        actual synthesis path is identical either way.
+        """
+        is_streaming = protocol_mode == "streaming"
+
+        if self._tts_synthesizer is None:
+            _LOGGER.warning("Received synthesize event but TTS is disabled (tts_enabled: false)")
+            await self.write_event(
+                WyomingError(text="TTS is disabled on this add-on", code="tts_disabled").event()
+            )
+            if is_streaming:
+                self._tts_stream_state.cancel()
+            return
+
         sample_rate = self._tts_synthesizer.sample_rate
 
         if not text or not text.strip():
@@ -493,25 +669,18 @@ class MoonshineAsrHandler(AsyncEventHandler):
             # pipeline) can legitimately send this, e.g. for a no-op reply.
             await self.write_event(AudioStart(rate=sample_rate, width=2, channels=1).event())
             await self.write_event(AudioStop().event())
+            if is_streaming:
+                await self.write_event(SynthesizeStopped().event())
+                self._tts_stream_state.finish()
             return
 
-        requested_at = time.monotonic()
         stats = _SynthesisStats()
         tts_stats = TtsSynthesisStats()
+        synthesis_started_at = time.monotonic()
         try:
             await self._stream_synthesis_chunks(text, voice_name, sample_rate, stats, tts_stats)
         except Exception as err:
-            _LOGGER.error("TTS synthesis failed: %s", err, exc_info=True)
-            # Only one audio-start per synthesize request: _stream_synthesis
-            # _chunks() may have already sent it (and possibly some chunks)
-            # before failing mid-stream -- a second one here would be a
-            # protocol violation, not just a cosmetic duplicate.
-            if not stats.audio_started:
-                await self.write_event(AudioStart(rate=sample_rate, width=2, channels=1).event())
-            await self.write_event(AudioStop().event())
-            await self.write_event(
-                WyomingError(text="TTS synthesis failed", code="tts_synthesis_error").event()
-            )
+            await self._handle_synthesis_error(err, sample_rate, stats, is_streaming)
             return
 
         if not stats.audio_started:
@@ -520,15 +689,57 @@ class MoonshineAsrHandler(AsyncEventHandler):
             # waiting forever for audio-stop.
             await self.write_event(AudioStart(rate=sample_rate, width=2, channels=1).event())
         await self.write_event(AudioStop().event())
+        if is_streaming:
+            await self.write_event(SynthesizeStopped().event())
+            self._tts_stream_state.finish()
 
         if self._tts_log_performance:
-            self._log_tts_performance(text, sample_rate, requested_at, stats, tts_stats)
+            self._log_tts_performance(
+                text,
+                sample_rate,
+                requested_at,
+                synthesis_started_at,
+                protocol_mode,
+                stats,
+                tts_stats,
+            )
+
+    async def _handle_synthesis_error(
+        self,
+        err: Exception,
+        sample_rate: int,
+        stats: "_SynthesisStats",
+        is_streaming: bool,
+    ) -> None:
+        """Answer a mid-synthesis failure: error, but always a well-formed
+        end to the response (audio-stop, plus synthesize-stopped for a
+        streaming request) so the client is never left waiting forever.
+
+        Split out of _run_tts_synthesis() purely to keep that method's own
+        branching simple.
+        """
+        _LOGGER.error("TTS synthesis failed: %s", err, exc_info=True)
+        # Only one audio-start per synthesize request: _stream_synthesis
+        # _chunks() may have already sent it (and possibly some chunks)
+        # before failing mid-stream -- a second one here would be a
+        # protocol violation, not just a cosmetic duplicate.
+        if not stats.audio_started:
+            await self.write_event(AudioStart(rate=sample_rate, width=2, channels=1).event())
+        await self.write_event(AudioStop().event())
+        await self.write_event(
+            WyomingError(text="TTS synthesis failed", code="tts_synthesis_error").event()
+        )
+        if is_streaming:
+            await self.write_event(SynthesizeStopped().event())
+            self._tts_stream_state.cancel()
 
     def _log_tts_performance(
         self,
         text: str,
         sample_rate: int,
         requested_at: float,
+        synthesis_started_at: float,
+        protocol_mode: str,
         stats: "_SynthesisStats",
         tts_stats: TtsSynthesisStats,
     ) -> None:
@@ -542,6 +753,17 @@ class MoonshineAsrHandler(AsyncEventHandler):
         those must be misread as one another. ``model_rtf`` reflects only
         the model's own compute; ``wall_rtf`` is the full, real
         client-observed request cost including all of the above.
+
+        ``requested_at`` is anchored at synthesize-start for a streaming
+        request (i.e. it includes the round trip of Home Assistant
+        actually sending its synthesize-chunk/synthesize/synthesize-stop
+        events), or at the single ``synthesize`` event for a legacy
+        request. ``first_audio_to_ha`` is anchored at
+        ``synthesis_started_at`` instead -- the moment the complete text
+        was known and real synthesis actually began -- isolating pure
+        model+send latency from that protocol/collection overhead. For a
+        legacy request the two anchors are identical, so
+        ``first_audio_to_ha`` intentionally equals ``ttfa_sent`` there.
         """
         wall_time = time.monotonic() - requested_at
         audio_duration = stats.total_samples / sample_rate if sample_rate else 0.0
@@ -549,18 +771,23 @@ class MoonshineAsrHandler(AsyncEventHandler):
             stats.first_chunk_generated_at - requested_at if stats.first_chunk_generated_at else 0.0
         )
         ttfa_sent = stats.first_chunk_sent_at - requested_at if stats.first_chunk_sent_at else 0.0
+        first_audio_to_ha = (
+            stats.first_chunk_sent_at - synthesis_started_at if stats.first_chunk_sent_at else 0.0
+        )
         model_rtf = (
             tts_stats.model_generation_seconds / audio_duration if audio_duration > 0 else 0.0
         )
         wall_rtf = wall_time / audio_duration if audio_duration > 0 else 0.0
         _LOGGER.info(
-            "TTS completed: model=%s chars=%d ttfa_generated=%.3fs ttfa_sent=%.3fs "
-            "lock_wait=%.3fs model_compute=%.2fs wyoming_send=%.3fs wall=%.2fs audio=%.2fs "
-            "model_rtf=%.2f wall_rtf=%.2f",
+            "TTS completed: model=%s chars=%d protocol_mode=%s ttfa_generated=%.3fs "
+            "ttfa_sent=%.3fs first_audio_to_ha=%.3fs lock_wait=%.3fs model_compute=%.2fs "
+            "wyoming_send=%.3fs wall=%.2fs audio=%.2fs model_rtf=%.2f wall_rtf=%.2f",
             self._tts_model_name,
             len(text),
+            protocol_mode,
             ttfa_generated,
             ttfa_sent,
+            first_audio_to_ha,
             tts_stats.lock_wait_seconds,
             tts_stats.model_generation_seconds,
             stats.wyoming_send_seconds,

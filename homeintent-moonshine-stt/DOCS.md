@@ -56,7 +56,8 @@ over one Wyoming service.
   module) -- `0` leaves that untouched; a positive value overrides it. This is
   a plausible real lever for real-time-factor on a multi-core host, since
   Pocket TTS otherwise never uses more than one core by default. Benchmark
-  different values on your own hardware (see Performance Notes) before
+  different values on your own hardware with `python -m app.tts_benchmark`
+  (sweeps `1,2,4,6,8,auto` by default -- see Performance Notes) before
   changing it -- too high a value on a shared host can slow STT and TTS down
   together instead of speeding TTS up (CPU oversubscription).
 
@@ -177,7 +178,16 @@ Both are cached under `/data/` — subsequent starts are fast.
   real, plausible reason for its real-time-factor being consistently above
   1.0 on production hardware. `tts_threads` (see Configuration above) is the
   only way to override this. Benchmark different values on your own target
-  hardware before changing the default.
+  hardware with `python -m app.tts_benchmark --threads 1,2,4,6,8,auto`
+  before changing the default -- each value is measured in its own
+  subprocess (a clean `torch.set_num_threads()` per run), reporting
+  time-to-first-audio, model compute time, and real-time factor.
+- **Streaming to Home Assistant**: since v0.2.7, the add-on advertises and
+  implements Wyoming's `synthesize-start`/`-chunk`/`-stop`/`-stopped`
+  streaming protocol, so Home Assistant plays audio as soon as Pocket TTS
+  produces its first chunk instead of buffering the entire response first.
+  This was the actual, verified cause of most of the previously perceived
+  TTS latency -- not Pocket TTS's own compute speed.
 
 ## Privacy
 

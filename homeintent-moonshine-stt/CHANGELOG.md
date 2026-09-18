@@ -1,5 +1,77 @@
 # Changelog - HomeIntent Moonshine Voice Add-on
 
+## [0.2.7] - 2026-09-18
+
+Real Wyoming TTS audio streaming to Home Assistant. See
+`ABSCHLUSSBERICHT_V0.2.7.md` for the full end-to-end analysis and
+verification against upstream Home Assistant Core source.
+
+### Fixed
+- **Home Assistant waited for the entire Pocket TTS response before
+  playing any audio, even though this add-on already streamed audio
+  internally.** Root cause (verified directly against
+  `homeassistant/components/wyoming/tts.py` upstream, not assumed): the
+  add-on's `describe` response advertised
+  `supports_synthesize_streaming=False`, so Home Assistant used its
+  legacy `async_get_tts_audio()` path, which loops reading `audio-chunk`
+  events into an in-memory `BytesIO` WAV file until `audio-stop`, and only
+  returns the complete file afterward -- Home Assistant's own streaming
+  audio player was never even reached. This add-on's internal
+  `generate_audio_stream()` use was real, but invisible to Home Assistant
+  under the old protocol.
+
+### Added
+- **Full Wyoming streaming-TTS protocol**: `synthesize-start`,
+  `synthesize-chunk`, `synthesize-stop`, and `synthesize-stopped` are now
+  implemented (`app/tts_stream.py`, `app/handler.py`), verified against
+  the installed `wyoming==1.10.2` package's real event classes.
+  `supports_synthesize_streaming` is now `True`, which makes Home
+  Assistant use its streaming Wyoming TTS client
+  (`async_stream_tts_audio()`) instead of the legacy buffering path --
+  audio now reaches Home Assistant as soon as Pocket TTS produces its
+  first chunk.
+- **`TtsStreamState`** (`app/tts_stream.py`): a small state machine
+  (idle/collecting/synthesizing/finished/cancelled) that prevents Home
+  Assistant's real client behavior -- sending the entire message a SECOND
+  time via a backwards-compatible `synthesize` event, right after the
+  streamed `synthesize-chunk`(s) -- from causing the text to be
+  synthesized (and spoken) twice. Verified this exact behavior directly
+  from `homeassistant/components/wyoming/tts.py`'s `_write_tts_message()`.
+- Every streaming request now ends with `synthesize-stopped`, which Home
+  Assistant's streaming reader (`_read_tts_audio()`) requires to end its
+  own read loop -- a plain `audio-stop` is not enough there (verified
+  from the same upstream source); the legacy single-shot path is
+  unchanged (no `synthesize-stopped`, since that client never reads for
+  one).
+- New performance-log fields: `protocol_mode=legacy|streaming` and
+  `first_audio_to_ha=`, isolating pure model+send latency (from the
+  moment the complete text was known) from the protocol/collection
+  overhead already included in `ttfa_generated`/`ttfa_sent` for a
+  streaming request.
+- **`python -m app.tts_benchmark`**: a new local CLI benchmarking Pocket
+  TTS time-to-first-audio and real-time factor across different
+  `tts_threads` values (default sweep: `1,2,4,6,8,auto`), each measured in
+  its own subprocess for a clean `torch.set_num_threads()` setting per
+  run. Not run in CI; a tool for tuning `tts_threads` on real target
+  hardware (see DOCS.md).
+
+### Investigated, not changed
+- Pocket TTS 3.1.0's `generate_audio_stream()` takes one complete
+  `text_to_generate` string per call (verified directly against
+  `pocket_tts.models.tts_model.TTSModel.generate_audio_stream()`'s
+  source) -- there is no incremental/appendable text API to feed
+  synthesize-chunk text into as it arrives. For the common case (a
+  HomeIntent/Assist intent response, where the full reply text is already
+  known before TTS starts), this is a non-issue: Home Assistant itself
+  sends the whole text as a single synthesize-chunk anyway (verified from
+  `homeassistant/components/tts/__init__.py`'s `_async_generate_tts_audio()`,
+  which wraps a plain string response in a single-item async generator).
+  No sentence/phrase buffering was added, since it isn't needed for that
+  case and would add real risk to word boundaries/ordering for no
+  measured benefit; `TtsStreamState` still correctly accumulates multiple
+  chunks as a fallback for a genuinely token-streamed LLM response or a
+  spec-only client.
+
 ## [0.2.6] - 2026-09-18
 
 Follow-up to v0.2.5's safe-keyterm fix, driven by real production log
