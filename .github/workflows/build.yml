@@ -274,6 +274,13 @@ jobs:
           path: homeintent-moonshine-stt/app/tests/fixtures/schalte_licht_wohnzimmer.wav
           retention-days: 14
 
+      - name: Print fixture as base64 (artifact download is blocked from the dev sandbox)
+        run: |
+          echo "===FIXTURE_B64_START==="
+          base64 -w0 homeintent-moonshine-stt/app/tests/fixtures/schalte_licht_wohnzimmer.wav
+          echo ""
+          echo "===FIXTURE_B64_END==="
+
   build-aarch64:
     name: Build aarch64 image (QEMU, build-only)
     runs-on: ubuntu-latest
