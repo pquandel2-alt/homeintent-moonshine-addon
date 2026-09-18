@@ -45,6 +45,16 @@ disallow_incomplete_defs = false
 module = "yaml"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# requests/huggingface_hub.utils are only used by app/tests/e2e_infra.py to
+# classify real e2e failures; whether type stubs are present for them
+# varies between environments (present transitively via moonshine-voice/
+# pocket-tts's own dependency resolution, absent in a minimal local
+# install) -- ignore_missing_imports avoids that divergence causing CI to
+# fail on an "unused ignore" where a plain inline comment would not.
+module = ["requests.*", "huggingface_hub.*"]
+ignore_missing_imports = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

@@ -35,7 +35,7 @@ except ImportError:  # pragma: no cover - huggingface_hub always installed trans
     pass
 
 try:
-    import requests.exceptions  # type: ignore[import-untyped]
+    import requests.exceptions
 
     _INFRA_EXCEPTION_TYPES += (
         requests.exceptions.ConnectionError,
