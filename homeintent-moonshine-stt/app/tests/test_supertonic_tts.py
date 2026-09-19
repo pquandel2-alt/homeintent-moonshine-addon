@@ -1,11 +1,22 @@
 """Tests for app/supertonic_tts.py: voice/sid mapping table and model file
-resolution/download-failure handling (no real network access)."""
+resolution/download-failure handling (no real network access).
 
+The tar-extraction safety logic itself (modern `filter="data"` path, legacy
+safe-extraction fallback, and all security rejection tests) is shared with
+app/kroko_model.py via app/safe_tar_extract.py and tested once in
+test_safe_tar_extract.py -- this file only carries a thin integration test
+confirming Supertonic's own `_download_and_extract` goes through that
+shared extractor.
+"""
+
+import io
+import tarfile
+import urllib.request
 from pathlib import Path
 
 import pytest
 
-from app import supertonic_tts
+from app import safe_tar_extract, supertonic_tts
 
 
 def test_voice_table_has_10_names_matching_upstream_f_and_m_series() -> None:
@@ -88,9 +99,77 @@ def test_download_failure_raises_supertonic_model_download_error(
     def _raise(*args: object, **kwargs: object) -> None:
         raise OSError("network unreachable")
 
-    import urllib.request
-
     monkeypatch.setattr(urllib.request, "urlretrieve", _raise)
 
     with pytest.raises(supertonic_tts.SupertonicModelDownloadError):
         supertonic_tts.resolve_supertonic_model_files(cache_dir=tmp_path / "empty")
+
+
+def _build_valid_supertonic_tar(archive_path: Path) -> None:
+    with tarfile.open(archive_path, "w:bz2") as tf:
+        for name in supertonic_tts._REQUIRED_FILES:
+            content = b"fake"
+            info = tarfile.TarInfo(name=name)
+            info.size = len(content)
+            info.type = tarfile.REGTYPE
+            tf.addfile(info, fileobj=io.BytesIO(content))
+
+
+def test_download_and_extract_uses_the_shared_safe_extractor(tmp_path: Path, monkeypatch) -> None:
+    """Integration check that Supertonic's `_download_and_extract` actually
+    calls through to `app.safe_tar_extract.safe_extractall` (the
+    security-critical validation logic itself is tested once, against the
+    shared module, in test_safe_tar_extract.py)."""
+    archive_path = tmp_path / "server" / "supertonic.tar.bz2"
+    archive_path.parent.mkdir()
+    _build_valid_supertonic_tar(archive_path)
+
+    def _fake_urlretrieve(url: str, filename: Path, *a: object, **k: object) -> None:
+        Path(filename).write_bytes(archive_path.read_bytes())
+
+    monkeypatch.setattr(urllib.request, "urlretrieve", _fake_urlretrieve)
+
+    calls: list[str] = []
+    real_safe_extractall = safe_tar_extract.safe_extractall
+
+    def _tracking_safe_extractall(tf: tarfile.TarFile, destination: Path, *, label: str) -> None:
+        calls.append(label)
+        real_safe_extractall(tf, destination, label=label)
+
+    monkeypatch.setattr(supertonic_tts, "safe_extractall", _tracking_safe_extractall)
+
+    dest_dir = tmp_path / "cache" / "pkg"
+    supertonic_tts._download_and_extract("https://example.invalid/supertonic.tar.bz2", dest_dir)
+
+    assert calls == ["Supertonic model"]
+    for name in supertonic_tts._REQUIRED_FILES:
+        assert (dest_dir / name).is_file()
+
+
+def test_download_and_extract_wraps_unsafe_member_as_supertonic_download_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Confirms the shared extractor's `UnsafeTarMemberError` is translated
+    into Supertonic's own domain exception, not left as a generic error."""
+    archive_path = tmp_path / "server" / "evil.tar.bz2"
+    archive_path.parent.mkdir()
+    with tarfile.open(archive_path, "w:bz2") as tf:
+        member = tarfile.TarInfo(name="/tmp/evil.txt")
+        member.size = 4
+        member.type = tarfile.REGTYPE
+        tf.addfile(member, fileobj=io.BytesIO(b"evil"))
+
+    def _fake_urlretrieve(url: str, filename: Path, *a: object, **k: object) -> None:
+        Path(filename).write_bytes(archive_path.read_bytes())
+
+    monkeypatch.setattr(urllib.request, "urlretrieve", _fake_urlretrieve)
+    # Force the legacy path: the modern filter="data" path already rejects
+    # this member itself (via a different exception type), which this test
+    # isn't about -- see test_safe_tar_extract.py for coverage of both.
+    monkeypatch.setattr(safe_tar_extract, "EXTRACTALL_SUPPORTS_FILTER", False)
+
+    dest_dir = tmp_path / "cache" / "pkg"
+    with pytest.raises(
+        supertonic_tts.SupertonicModelDownloadError, match="unsafe Supertonic model archive"
+    ):
+        supertonic_tts._download_and_extract("https://example.invalid/evil.tar.bz2", dest_dir)
