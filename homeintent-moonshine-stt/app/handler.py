@@ -443,9 +443,11 @@ class MoonshineAsrHandler(AsyncEventHandler):
             # processing slower than real-time on this CPU (a genuine
             # throughput problem, not a one-off stall); a max much larger
             # than avg_chunk instead points at an isolated stall/backlog.
+            engine_id = self._stt_engine.engine_id if self._stt_engine is not None else "unknown"
             _LOGGER.info(
-                "STT completed: model=%s audio=%.2fs inference=%.2fs finalize=%.2fs rtf=%.2f "
-                "chunks=%d add_audio_total=%.2fs add_audio_max=%.3fs avg_chunk=%.3fs",
+                "STT completed: engine=%s model=%s audio=%.2fs inference=%.2fs finalize=%.2fs "
+                "rtf=%.2f chunks=%d add_audio_total=%.2fs add_audio_max=%.3fs avg_chunk=%.3fs",
+                engine_id,
                 self._model_name,
                 audio_duration,
                 inference_time,

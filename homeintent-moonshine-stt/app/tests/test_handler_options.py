@@ -130,6 +130,75 @@ class TestLogPerformance:
         assert "STT completed" not in caplog.text
 
 
+class TestSttPerformanceLogNamesEngine:
+    """v0.6.1: the STT performance line must name the active engine
+    (`engine=<engine_id>`), consistently across every engine via the shared
+    SttEngine/SttSession abstraction -- not just for the Moonshine
+    transcriber-path handler construction the other tests above use."""
+
+    @pytest.mark.asyncio
+    async def test_moonshine_transcriber_path_logs_engine_moonshine(
+        self, mock_transcriber, mock_stream, mock_reader, mock_writer, caplog
+    ):
+        _make_stop_completing(mock_stream, "Test")
+        handler = MoonshineAsrHandler(
+            reader=mock_reader,
+            writer=mock_writer,
+            transcriber=mock_transcriber,
+            model_name="small",
+            log_performance=True,
+        )
+        with caplog.at_level(logging.INFO, logger="app.handler"):
+            await _run_one_utterance(handler, mock_stream)
+
+        perf_lines = [r.message for r in caplog.records if "STT completed" in r.message]
+        assert perf_lines
+        assert "engine=moonshine" in perf_lines[0]
+
+    @pytest.mark.asyncio
+    async def test_speechcatcher_engine_path_logs_engine_speechcatcher_m(
+        self, mock_reader, mock_writer, caplog
+    ):
+        from app.speechcatcher_engine import SpeechcatcherSttEngine
+
+        class _FakeSpeech2TextStreaming:
+            def reset(self) -> None:
+                pass
+
+            def __call__(self, speech, is_final=False, always_assemble_hyps=True):
+                if is_final:
+                    return [("schalte das licht ein", [], [])]
+                return []
+
+        stt_engine = SpeechcatcherSttEngine(_FakeSpeech2TextStreaming(), "speechcatcher_m")
+        handler = MoonshineAsrHandler(
+            reader=mock_reader,
+            writer=mock_writer,
+            stt_engine=stt_engine,
+            model_name=stt_engine.model_display_name,
+            log_performance=True,
+        )
+        with caplog.at_level(logging.INFO, logger="app.handler"):
+            await _run_one_utterance(handler, mock_stream=MagicMock())
+
+        perf_lines = [r.message for r in caplog.records if "STT completed" in r.message]
+        assert perf_lines
+        line = perf_lines[0]
+        assert "engine=speechcatcher_m" in line
+        for field in (
+            "model=",
+            "audio=",
+            "inference=",
+            "finalize=",
+            "rtf=",
+            "chunks=",
+            "add_audio_total=",
+            "add_audio_max=",
+            "avg_chunk=",
+        ):
+            assert field in line, f"missing {field!r} in {line!r}"
+
+
 class TestDebugAudio:
     @pytest.mark.asyncio
     async def test_save_debug_audio_true_writes_wav_and_json(

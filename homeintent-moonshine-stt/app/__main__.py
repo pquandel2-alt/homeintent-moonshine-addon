@@ -60,6 +60,7 @@ from app.validation import (
     validate_supertonic_speed,
     validate_supertonic_steps,
     validate_supertonic_threads,
+    validate_supertonic_voice,
     validate_transcription_interval,
     validate_tts_engine,
     validate_tts_threads,
@@ -76,7 +77,7 @@ logging.basicConfig(
 )
 _LOGGER = logging.getLogger(__name__)
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -350,6 +351,52 @@ def _load_json_config_overrides(args: argparse.Namespace) -> bool:
     return True
 
 
+def _should_start_ha_vocabulary_refresh(
+    args: argparse.Namespace, stt_engine: SttEngine | None
+) -> bool:
+    """Whether the periodic HA-vocabulary refresh loop should run.
+
+    v0.6.1: capability-gated -- previously this only checked
+    ``use_ha_vocabulary``/``ha_vocabulary_refresh_minutes``, so Speechcatcher
+    and Vosk (neither of which can apply a refreshed vocabulary at all, see
+    their own ``capabilities.supports_dynamic_vocabulary=False``) still ran
+    a periodic Home Assistant API poll for no possible benefit. Now also
+    requires ``stt_engine.capabilities.supports_dynamic_vocabulary`` --
+    Moonshine and Kroko (both ``True``) keep refreshing exactly as before.
+    """
+    return (
+        args.stt_enabled
+        and stt_engine is not None
+        and args.use_ha_vocabulary
+        and args.ha_vocabulary_refresh_minutes > 0
+        and stt_engine.capabilities.supports_dynamic_vocabulary
+    )
+
+
+def _log_ha_vocabulary_refresh_not_started(
+    args: argparse.Namespace, stt_engine: SttEngine | None
+) -> None:
+    """One-time startup log line for the specific, actionable case: HA
+    vocabulary is wanted (use_ha_vocabulary + a nonzero refresh interval)
+    but the active engine cannot use it. Silent for every other reason the
+    refresh loop did not start (STT disabled, use_ha_vocabulary off, ...) --
+    those are already self-explanatory from the rest of the startup banner.
+    """
+    if (
+        args.stt_enabled
+        and stt_engine is not None
+        and args.use_ha_vocabulary
+        and args.ha_vocabulary_refresh_minutes > 0
+        and not stt_engine.capabilities.supports_dynamic_vocabulary
+    ):
+        _LOGGER.info(
+            "HA vocabulary refresh not supported by engine %s; periodic "
+            "refresh disabled (no periodic Home Assistant API polling "
+            "will occur)",
+            stt_engine.engine_id,
+        )
+
+
 async def _refresh_ha_vocabulary_periodically(
     stt_engine: SttEngine,
     manual_keyterms: list[str],
@@ -453,7 +500,13 @@ def _validate_args(args: argparse.Namespace) -> bool:
         validate_speechcatcher_threads(args.speechcatcher_threads)
         validate_speechcatcher_beam_size(args.speechcatcher_beam_size)
         validate_supertonic_speed(args.supertonic_speed)
-        validate_supertonic_steps(args.supertonic_steps)
+        # These two never raise -- they gracefully fall back to the
+        # documented default (with a warning log) for a value that is no
+        # longer valid under the current dropdown schema, e.g. after an
+        # upgrade from a version where these fields were free text/a wider
+        # numeric range (see app/validation.py's docstrings).
+        args.supertonic_steps = validate_supertonic_steps(args.supertonic_steps)
+        args.supertonic_voice = validate_supertonic_voice(args.supertonic_voice)
         validate_supertonic_threads(args.supertonic_threads)
     except ValueError as e:
         _LOGGER.error(f"Invalid configuration: {e}")
@@ -940,12 +993,8 @@ def main() -> int:
 
     async def run_server() -> None:
         refresh_task: asyncio.Task[None] | None = None
-        if (
-            args.stt_enabled
-            and stt_engine is not None
-            and args.use_ha_vocabulary
-            and args.ha_vocabulary_refresh_minutes > 0
-        ):
+        if _should_start_ha_vocabulary_refresh(args, stt_engine):
+            assert stt_engine is not None  # narrowed by the check above
             last_known_good_terms = list(initial_ha_terms)
             refresh_task = asyncio.create_task(
                 _refresh_ha_vocabulary_periodically(
@@ -956,6 +1005,8 @@ def main() -> int:
                     moonshine_lock,
                 )
             )
+        else:
+            _log_ha_vocabulary_refresh_not_started(args, stt_engine)
         try:
             await server.run(handler_factory)
         finally:

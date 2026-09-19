@@ -5,6 +5,7 @@ combinations, and startup failing cleanly (not crashing with a traceback
 into the s6 supervision tree) for an invalid TTS model.
 """
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -13,13 +14,86 @@ from unittest.mock import MagicMock, patch
 from app.__main__ import (
     _load_engines,
     _load_json_config_overrides,
+    _should_start_ha_vocabulary_refresh,
     build_arg_parser,
     main,
 )
+from app.stt_engine import SttCapabilities, SttSession
 
 
-def _parse(argv: list[str]):
+def _parse(argv: list[str]) -> argparse.Namespace:
     return build_arg_parser().parse_args(argv)
+
+
+class _FakeSttEngine:
+    """Minimal, fully SttEngine-protocol-conformant double for
+    _should_start_ha_vocabulary_refresh() tests -- only ``engine_id``/
+    ``capabilities`` are actually exercised; the rest are trivial stand-ins
+    so this satisfies the SttEngine structural protocol for typing."""
+
+    def __init__(self, supports_dynamic_vocabulary: bool) -> None:
+        self.engine_id = "fake"
+        self.capabilities = SttCapabilities(
+            supports_streaming=True,
+            supports_hotwords=supports_dynamic_vocabulary,
+            supports_dynamic_vocabulary=supports_dynamic_vocabulary,
+        )
+        self.program_name = "homeintent-fake"
+        self.model_display_name = "fake"
+        self.description = "fake engine for tests"
+        self.attribution_name = "fake"
+        self.attribution_url = "https://example.invalid"
+
+    def create_session(self, lock: object | None = None) -> "SttSession":
+        raise NotImplementedError
+
+    def set_keyterms(
+        self, terms: list[str], fallback_terms: list[str] | None = None
+    ) -> tuple[list[str], bool]:
+        return [], True
+
+
+class TestShouldStartHaVocabularyRefresh:
+    """v0.6.1: the periodic HA-vocabulary refresh loop must only start when
+    BOTH use_ha_vocabulary is enabled AND the active engine actually
+    supports dynamic vocabulary (Moonshine/Kroko: yes; Speechcatcher/Vosk:
+    no)."""
+
+    def _args(self, **overrides: object) -> argparse.Namespace:
+        args = _parse([])
+        args.stt_enabled = True
+        args.use_ha_vocabulary = True
+        args.ha_vocabulary_refresh_minutes = 30
+        for key, value in overrides.items():
+            setattr(args, key, value)
+        return args
+
+    def test_starts_for_dynamic_vocab_supporting_engine(self) -> None:
+        engine = _FakeSttEngine(supports_dynamic_vocabulary=True)
+        assert _should_start_ha_vocabulary_refresh(self._args(), engine) is True
+
+    def test_does_not_start_for_non_supporting_engine(self) -> None:
+        engine = _FakeSttEngine(supports_dynamic_vocabulary=False)
+        assert _should_start_ha_vocabulary_refresh(self._args(), engine) is False
+
+    def test_does_not_start_when_use_ha_vocabulary_disabled(self) -> None:
+        engine = _FakeSttEngine(supports_dynamic_vocabulary=True)
+        args = self._args(use_ha_vocabulary=False)
+        assert _should_start_ha_vocabulary_refresh(args, engine) is False
+
+    def test_does_not_start_when_refresh_minutes_is_zero(self) -> None:
+        engine = _FakeSttEngine(supports_dynamic_vocabulary=True)
+        args = self._args(ha_vocabulary_refresh_minutes=0)
+        assert _should_start_ha_vocabulary_refresh(args, engine) is False
+
+    def test_does_not_start_when_stt_disabled(self) -> None:
+        engine = _FakeSttEngine(supports_dynamic_vocabulary=True)
+        args = self._args(stt_enabled=False)
+        assert _should_start_ha_vocabulary_refresh(args, engine) is False
+
+    def test_does_not_start_when_engine_is_none(self) -> None:
+        args = self._args()
+        assert _should_start_ha_vocabulary_refresh(args, None) is False
 
 
 class TestDefaults:
