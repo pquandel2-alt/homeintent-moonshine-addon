@@ -116,7 +116,7 @@ jobs:
           echo "::error::Wyoming server never answered a real describe request"
           exit 1
 
-      - name: Kroko tar-extraction smoke test (inside the real built image)
+      - name: Safe tar-extraction smoke test (inside the real built image)
         # v0.6.2: this is the coverage gap that let the v0.6.1 production
         # bug ship -- test_e2e_kroko_stt.py's real Kroko E2E test only ever
         # ran under CI's own Python (actions/setup-python@v4's "3.11", a
@@ -131,14 +131,18 @@ jobs:
         # earlier "Start add-on container" step above and runs it with that
         # container's own venv Python, so it exercises the exact same
         # Python/tarfile combination a real installation would -- no real
-        # multi-hundred-MB Kroko model is downloaded; a tiny synthetic
-        # .tar.bz2 fixture is built on the fly and the real
-        # app.kroko_model._download_and_extract() function is called
-        # against it (network download itself stubbed via a monkeypatched
-        # urlretrieve). Fails the job on any extraction failure.
+        # multi-hundred-MB model archive is downloaded; tiny synthetic
+        # .tar.bz2 fixtures are built on the fly and the real
+        # app.kroko_model._download_and_extract() AND
+        # app.supertonic_tts._download_and_extract() functions are called
+        # against them (network download itself stubbed via a monkeypatched
+        # urlretrieve) -- both engines funnel through the same shared
+        # app.safe_tar_extract module, so one smoke test proves the real
+        # image's Python/tarfile behavior for both. Fails the job on any
+        # extraction failure.
         run: |
-          docker cp .github/ci/kroko_extract_smoketest.py moonshine-test:/tmp/kroko_extract_smoketest.py
-          docker exec moonshine-test /opt/venv/bin/python3 /tmp/kroko_extract_smoketest.py
+          docker cp .github/ci/safe_tar_extract_smoketest.py moonshine-test:/tmp/safe_tar_extract_smoketest.py
+          docker exec moonshine-test /opt/venv/bin/python3 /tmp/safe_tar_extract_smoketest.py
 
       - name: Container logs
         if: always()

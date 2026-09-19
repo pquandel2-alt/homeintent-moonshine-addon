@@ -69,6 +69,39 @@ v0.6.0 for the full 5 STT x 3 TTS engine matrix, unchanged here.
     a battery of rejection tests (path traversal, absolute path, symlink
     escape, hardlink escape, FIFO, character/block device) each asserting
     nothing is written outside the intended extraction destination.
+- **`tts_engine: supertonic_3` had the identical latent bug**: `app/
+  supertonic_tts.py`'s own model-archive extraction also called
+  `tarfile.TarFile.extractall(extract_dir, filter="data")`
+  unconditionally, on the Supertonic 3 model archive downloaded from
+  GitHub Releases -- this would have hit the exact same `TypeError` the
+  first time a real installation selected `supertonic_3` and triggered a
+  real model download (no prior report yet, only because this feature is
+  newer and the download is triggered less often than Kroko's).
+  - **Fix**: the extraction-safety logic above was factored out of
+    `app/kroko_model.py` into a new shared module,
+    `app/safe_tar_extract.py` (feature detection, `safe_extractall()`,
+    the legacy fallback extractor, and its member-validation helper), so
+    this security-sensitive logic is implemented and tested exactly once.
+    Both `app/kroko_model.py` and `app/supertonic_tts.py` now call
+    `safe_tar_extract.safe_extractall(tf, extract_dir, label=...)` instead
+    of extracting directly, with no change in behavior for Kroko (same
+    feature detection, same security guarantees, same atomic
+    download-to-temp-then-move pattern). Each engine still wraps a
+    rejected/unsafe archive in its own domain exception
+    (`KrokoModelDownloadError` / `SupertonicModelDownloadError`) so a
+    startup failure is reported with the right engine name.
+  - The container-level CI smoke test was renamed and extended
+    (`.github/ci/safe_tar_extract_smoketest.py`) to exercise BOTH engines'
+    real `_download_and_extract()` functions inside the actual built
+    image in one run, since both now funnel through the same shared
+    module -- no separate per-engine smoke test needed.
+  - The security-sensitive extraction tests (modern path, legacy fallback,
+    and all rejection cases) moved to `app/tests/test_safe_tar_extract.py`
+    and are tested once against the shared module; `test_kroko_model.py`
+    and `test_supertonic_tts.py` each keep a thin integration test
+    confirming their own `_download_and_extract()` actually calls through
+    to the shared extractor and correctly translates a rejected member
+    into their own domain exception.
 
 ## [0.6.1] - 2026-09-19
 
