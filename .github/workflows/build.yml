@@ -329,6 +329,30 @@ jobs:
           cd homeintent-moonshine-stt
           python3 -m pytest app/tests/test_e2e_speechcatcher_stt.py -v -m e2e -rs
 
+  e2e-vosk-stt-transcribe:
+    name: Real German Vosk STT E2E Wyoming round-trip
+    # Downloads the real, small (~45MB) Vosk German model on every run --
+    # same gating as e2e-kokoro-tts-synthesize above, for the same reason.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
+
+      - name: Transcribe real German audio with Vosk and check the result
+        env:
+          E2E_REQUIRE_ONLINE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
+          RUN_VOSK_E2E: "1"
+        run: |
+          cd homeintent-moonshine-stt
+          python3 -m pytest app/tests/test_e2e_vosk_stt.py -v -m e2e -rs
+
   e2e-supertonic-tts-synthesize:
     name: Real German Supertonic 3 TTS E2E Wyoming round-trip
     # Downloads the real sherpa-onnx Supertonic 3 int8 model on every run --

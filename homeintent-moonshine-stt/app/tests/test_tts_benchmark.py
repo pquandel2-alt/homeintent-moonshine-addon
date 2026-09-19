@@ -72,6 +72,10 @@ class TestArgParsing:
         args = build_arg_parser().parse_args(["--engine", "kokoro_onnx"])
         assert args.engine == "kokoro_onnx"
 
+    def test_engine_can_be_supertonic_3(self):
+        args = build_arg_parser().parse_args(["--engine", "supertonic_3"])
+        assert args.engine == "supertonic_3"
+
     def test_invalid_engine_rejected(self):
         import pytest
 
@@ -104,6 +108,49 @@ class TestGermanTestSentences:
             "Das Küchenfenster, das Bürofenster und das Schlafzimmerfenster sind geöffnet.",
             "Die Waschmaschine ist um 18:20 Uhr fertig.",
         )
+
+
+class TestMeasureAllSentencesDispatch:
+    """Only the requested --engine's own builder is ever called -- proves
+    Supertonic 3 slots into the same _measure_all_sentences() dispatch as
+    Pocket TTS/Kokoro, not a separate code path (this module's own
+    docstring)."""
+
+    def test_supertonic_dispatch_calls_only_supertonic_builder(self, monkeypatch) -> None:
+        import asyncio
+
+        import app.tts_benchmark as mod
+
+        called = {"pocket": False, "kokoro": False, "supertonic": False}
+
+        class _FakeSynthesizer:
+            sample_rate = 24000
+
+            async def synthesize_stream(self, text, voice, stats=None):
+                import numpy as np
+
+                yield np.zeros(100, dtype=np.float32)
+
+        async def _fake_supertonic(threads, voice, cache_dir):
+            called["supertonic"] = True
+            return _FakeSynthesizer()
+
+        async def _fake_kokoro(threads, voice, cache_dir):
+            called["kokoro"] = True
+            return _FakeSynthesizer()
+
+        async def _fake_pocket(threads, model, voice, cache_dir):
+            called["pocket"] = True
+            return _FakeSynthesizer()
+
+        monkeypatch.setattr(mod, "_build_supertonic_synthesizer", _fake_supertonic)
+        monkeypatch.setattr(mod, "_build_kokoro_synthesizer", _fake_kokoro)
+        monkeypatch.setattr(mod, "_build_pocket_synthesizer", _fake_pocket)
+
+        asyncio.run(
+            mod._measure_all_sentences("supertonic_3", "1", ("Eins.",), "german", "M1", None)
+        )
+        assert called == {"pocket": False, "kokoro": False, "supertonic": True}
 
 
 class TestRtf:

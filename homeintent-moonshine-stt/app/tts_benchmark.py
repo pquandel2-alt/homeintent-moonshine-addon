@@ -1,9 +1,18 @@
 """Local benchmark CLI: measures TTS time-to-first-audio and real-time
-factor for either engine (Pocket TTS or Kokoro ONNX) across different
-thread-count settings, on the user's own hardware.
+factor for any of the three TTS engines (Pocket TTS, Kokoro ONNX, or
+Supertonic 3) across different thread-count settings, on the user's own
+hardware.
+
+Supertonic 3 support was an explicit, honestly-reported gap in an earlier
+phase of this add-on's development (Pocket TTS and Kokoro ONNX only) --
+this module now covers all three engines this add-on ships, using the
+same TtsSynthesizer interface (synthesize_stream/preload_default_voice/
+sample_rate) every engine already implements (see app/tts_engine.py), so
+Supertonic slots into the exact same measurement code as the other two,
+not a separate code path.
 
 Not run in CI and not a source of any TTFA/RTF/RAM numbers quoted in
-README/DOCS -- both engines' performance depends heavily on the host CPU
+README/DOCS -- every engine's performance depends heavily on the host CPU
 (GitHub Actions runners are NOT representative of real Home Assistant
 hardware, e.g. an Intel Core i5-12450H), so the only honest numbers are
 ones users measure themselves with this tool, on their own target
@@ -25,6 +34,7 @@ Usage:
     python -m app.tts_benchmark --engine pocket_tts
     python -m app.tts_benchmark --engine kokoro_onnx --threads 1,2,4,6,8,auto
     python -m app.tts_benchmark --engine kokoro_onnx --output json
+    python -m app.tts_benchmark --engine supertonic_3 --voice M1
     python -m app.tts_benchmark --engine pocket_tts --model german_24l \
         --text "Das Küchenfenster und das Schlafzimmerfenster sind geöffnet."
 """
@@ -109,6 +119,19 @@ async def _build_kokoro_synthesizer(
     return synthesizer
 
 
+async def _build_supertonic_synthesizer(
+    threads: str, voice: str, cache_dir: Path | None
+) -> "TtsSynthesizer":
+    from app.supertonic_session import SupertonicSynthesizer
+    from app.supertonic_tts import load_supertonic_tts
+
+    num_threads = 1 if threads == "auto" else int(threads)
+    tts = load_supertonic_tts(cache_dir=cache_dir, num_threads=num_threads)
+    synthesizer = SupertonicSynthesizer(tts, default_voice=voice)
+    await synthesizer.preload_default_voice()
+    return synthesizer
+
+
 async def _measure_all_sentences(
     engine: str,
     threads: str,
@@ -123,6 +146,8 @@ async def _measure_all_sentences(
     load_started = time.monotonic()
     if engine == "kokoro_onnx":
         synthesizer = await _build_kokoro_synthesizer(threads, voice, cache_dir)
+    elif engine == "supertonic_3":
+        synthesizer = await _build_supertonic_synthesizer(threads, voice, cache_dir)
     else:
         synthesizer = await _build_pocket_synthesizer(threads, model, voice, cache_dir)
     model_load_s = time.monotonic() - load_started
@@ -223,7 +248,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--engine",
-        choices=["pocket_tts", "kokoro_onnx"],
+        choices=["pocket_tts", "kokoro_onnx", "supertonic_3"],
         default="pocket_tts",
         help="Which TTS engine to benchmark (default: pocket_tts)",
     )
@@ -281,13 +306,15 @@ def _print_text(result: TtsThreadBenchmarkResult) -> None:
     )
 
 
+_DEFAULT_VOICE_BY_ENGINE = {"kokoro_onnx": "martin", "supertonic_3": "M1", "pocket_tts": "juergen"}
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
-    default_voice = "martin" if args.engine == "kokoro_onnx" else "juergen"
-    voice = args.voice or default_voice
+    voice = args.voice or _DEFAULT_VOICE_BY_ENGINE[args.engine]
 
     sentences = tuple(args.sentences) if args.sentences else GERMAN_TEST_SENTENCES
     if args.sentences_legacy:
