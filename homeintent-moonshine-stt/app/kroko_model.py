@@ -45,6 +45,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.safe_tar_extract import UnsafeTarMemberError, safe_extractall
+
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_KROKO_CACHE_DIR = Path(os.environ.get("KROKO_CACHE", "/data/models/kroko"))
@@ -139,7 +141,11 @@ def _download_and_extract(url: str, dest_dir: Path) -> None:
         extract_dir.mkdir()
         try:
             with tarfile.open(archive_path) as tf:
-                tf.extractall(extract_dir, filter="data")  # noqa: S202
+                safe_extractall(tf, extract_dir, label="Kroko model")
+        except UnsafeTarMemberError as err:
+            raise KrokoModelDownloadError(
+                f"Refusing to extract unsafe Kroko model archive member: {err}"
+            ) from err
         except Exception as err:
             raise KrokoModelDownloadError(
                 f"Failed to extract Kroko model archive downloaded from '{url}': "

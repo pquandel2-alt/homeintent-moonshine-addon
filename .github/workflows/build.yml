@@ -116,6 +116,41 @@ jobs:
           echo "::error::Wyoming server never answered a real describe request"
           exit 1
 
+      - name: Safe tar-extraction smoke test (inside the real built image)
+        # v0.6.2: this is the coverage gap that let the v0.6.1 production
+        # bug ship -- test_e2e_kroko_stt.py's real Kroko E2E test only ever
+        # ran under CI's own Python (actions/setup-python@v4's "3.11", a
+        # much newer 3.11.x patch release than what the real add-on image
+        # actually runs), so it never caught that the image's Debian
+        # bookworm apt-installed python3.11 (built from upstream 3.11.2,
+        # predating upstream 3.11.4's PEP 706 `filter=` backport) has no
+        # `filter=` keyword argument on `TarFile.extractall()` at all --
+        # exactly the `TypeError: TarFile.extractall() got an unexpected
+        # keyword argument 'filter'` a real installation hit. This step
+        # copies a small script into the ALREADY-RUNNING container from the
+        # earlier "Start add-on container" step above and runs it with that
+        # container's own venv Python, so it exercises the exact same
+        # Python/tarfile combination a real installation would -- no real
+        # multi-hundred-MB model archive is downloaded; tiny synthetic
+        # .tar.bz2 fixtures are built on the fly and the real
+        # app.kroko_model._download_and_extract() AND
+        # app.supertonic_tts._download_and_extract() functions are called
+        # against them (network download itself stubbed via a monkeypatched
+        # urlretrieve) -- both engines funnel through the same shared
+        # app.safe_tar_extract module, so one smoke test proves the real
+        # image's Python/tarfile behavior for both. Fails the job on any
+        # extraction failure.
+        run: |
+          docker cp .github/ci/safe_tar_extract_smoketest.py moonshine-test:/tmp/safe_tar_extract_smoketest.py
+          # PYTHONPATH=/ mirrors how the real entrypoint (`python3 -m app`,
+          # run from the image's `/` WORKDIR) resolves `app.*` imports: `/app`
+          # is a package directory, importable as `app` only when `/` is on
+          # sys.path. Running a plain script instead of `-m` puts the
+          # script's own directory (`/tmp`) on sys.path[0], not `/`, so
+          # `from app import ...` fails with `ModuleNotFoundError: No module
+          # named 'app'` without this.
+          docker exec -e PYTHONPATH=/ moonshine-test /opt/venv/bin/python3 /tmp/safe_tar_extract_smoketest.py
+
       - name: Container logs
         if: always()
         run: |
@@ -450,6 +485,23 @@ jobs:
 
   build-aarch64:
     name: Build aarch64 image (QEMU, build-only)
+    # v0.6.2: the amd64 job above got a real container-level Kroko
+    # tar-extraction smoke test (docker exec against the actual built
+    # image's own Python) -- this job stays build-only and does NOT get
+    # the equivalent, checked deliberately rather than assumed: it builds
+    # with `load: false` (the image is never loaded into the local Docker
+    # daemon at all, only pushed to buildx's own cache) under QEMU
+    # emulation for arm64, so there is no local image to `docker run`/`docker
+    # exec` against without first adding `load: true` (a real, brand-new
+    # arm64 image pull/load step) and then paying full QEMU-emulated
+    # container startup + exec cost on top of the already-slow emulated
+    # build itself. Since Debian bookworm's apt-installed python3.11
+    # package (the actual root cause here) is the same architecture-
+    # independent source package on both amd64 and aarch64 base images, the
+    # amd64 job's smoke test already exercises the real, relevant
+    # Python/tarfile combination -- aarch64 isn't independently at risk of
+    # a different tarfile API, so the amd64 coverage is accepted as
+    # sufficient here rather than paying that QEMU cost.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

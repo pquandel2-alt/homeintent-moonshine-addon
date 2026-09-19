@@ -55,6 +55,8 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
+from app.safe_tar_extract import UnsafeTarMemberError, safe_extractall
+
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_SUPERTONIC_CACHE_DIR = Path(os.environ.get("SUPERTONIC_CACHE", "/data/models/supertonic"))
@@ -116,7 +118,12 @@ class SupertonicModelDownloadError(Exception):
 def _download_and_extract(url: str, dest_dir: Path) -> None:
     """Same atomic download+extract strategy as app/kroko_model.py's own
     helper (download to a temp file, extract to a temp sibling dir, rename
-    into place only once both steps succeed)."""
+    into place only once both steps succeed), and the same shared
+    :func:`app.safe_tar_extract.safe_extractall` for the extraction step
+    itself -- see that module's docstring for the real production bug
+    (Debian bookworm's apt-installed python3.11 lacking
+    `TarFile.extractall()`'s `filter=` keyword argument) this guards against
+    for both Kroko and Supertonic."""
     dest_dir.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=dest_dir.parent) as tmp:
         tmp_path = Path(tmp)
@@ -133,7 +140,11 @@ def _download_and_extract(url: str, dest_dir: Path) -> None:
         extract_dir.mkdir()
         try:
             with tarfile.open(archive_path) as tf:
-                tf.extractall(extract_dir, filter="data")  # noqa: S202
+                safe_extractall(tf, extract_dir, label="Supertonic model")
+        except UnsafeTarMemberError as err:
+            raise SupertonicModelDownloadError(
+                f"Refusing to extract unsafe Supertonic model archive member: {err}"
+            ) from err
         except Exception as err:
             raise SupertonicModelDownloadError(
                 f"Failed to extract Supertonic model archive downloaded from '{url}': "
