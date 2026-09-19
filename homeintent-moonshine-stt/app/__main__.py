@@ -65,6 +65,8 @@ from app.validation import (
     validate_tts_threads,
     validate_vad_threshold,
 )
+from app.vosk_engine import VoskSttEngine, load_vosk_engine
+from app.vosk_model import VoskModelDownloadError
 
 # Setup logging
 logging.basicConfig(
@@ -74,7 +76,7 @@ logging.basicConfig(
 )
 _LOGGER = logging.getLogger(__name__)
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -93,7 +95,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--stt-engine",
-        choices=["moonshine", "kroko", "speechcatcher_m", "speechcatcher_l"],
+        choices=["moonshine", "kroko", "speechcatcher_m", "speechcatcher_l", "vosk_german"],
         # MUST default to moonshine: an existing installation's persisted
         # options.json predates this option entirely, and Supervisor's own
         # schema-default resolution is not something this add-on can
@@ -498,6 +500,8 @@ def _log_startup_banner(
                 if args.speechcatcher_threads == 0
                 else str(args.speechcatcher_threads),
             )
+        elif args.stt_engine == "vosk_german":
+            _LOGGER.info("STT: language=%s (lightweight Kaldi/Vosk model)", args.language)
         else:
             _LOGGER.info("STT: model=%s language=%s", args.model, args.language)
         _LOGGER.info("STT: HA vocabulary=%s", "enabled" if args.use_ha_vocabulary else "disabled")
@@ -809,6 +813,35 @@ def _load_speechcatcher_engine(
     return engine, manual_keyterms, ha_terms, accepted
 
 
+def _load_vosk_engine(
+    args: argparse.Namespace,
+) -> tuple[VoskSttEngine, list[str], list[str], list[str]] | None:
+    """Resolve/download the Vosk German model and construct the engine.
+    Returns None on failure.
+
+    Same fail-loudly philosophy as the other STT engine loaders (see
+    _load_kroko_engine's docstring). Vosk has no usable HA-vocabulary
+    biasing mechanism (see app/vosk_engine.py's module docstring) --
+    ``set_keyterms()`` is still called for interface consistency and to
+    log a clear "not supported" message once at startup, but it never
+    actually biases recognition.
+    """
+    try:
+        engine = load_vosk_engine()
+    except VoskModelDownloadError as e:
+        _LOGGER.error(f"Failed to download/load Vosk model: {e}")
+        return None
+    except Exception as e:
+        _LOGGER.error(f"Failed to load Vosk model: {e}")
+        return None
+
+    manual_keyterms, ha_terms = _resolve_keyterms(args)
+    effective_keyterms = merge_keyterms(ha_terms, manual_keyterms)
+    accepted, _ = engine.set_keyterms(effective_keyterms)
+
+    return engine, manual_keyterms, ha_terms, accepted
+
+
 def _load_and_bias_stt_engine(
     args: argparse.Namespace,
 ) -> tuple[SttEngine, list[str], list[str], list[str]] | None:
@@ -818,6 +851,8 @@ def _load_and_bias_stt_engine(
         return _load_kroko_engine(args)
     if args.stt_engine in ("speechcatcher_m", "speechcatcher_l"):
         return _load_speechcatcher_engine(args)
+    if args.stt_engine == "vosk_german":
+        return _load_vosk_engine(args)
     return _load_moonshine_engine(args)
 
 

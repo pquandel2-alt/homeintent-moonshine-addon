@@ -1,7 +1,7 @@
 [project]
 name = "homeintent-moonshine-stt"
-version = "0.5.0"
-description = "German speech-to-text (Moonshine, Kroko, Speechcatcher) and text-to-speech (Kyutai Pocket TTS, Kokoro ONNX, Supertonic 3)"
+version = "0.6.0"
+description = "German speech-to-text (Moonshine, Kroko, Speechcatcher, Vosk) and text-to-speech (Kyutai Pocket TTS, Kokoro ONNX, Supertonic 3)"
 requires-python = ">=3.11"
 dependencies = [
     "moonshine-voice==0.1.5",
@@ -44,6 +44,13 @@ dependencies = [
     "jaconv==0.5.0",
     "pytorch-wpe==0.0.1",
     "ctc-segmentation==1.7.4",
+    # Vosk (stt_engine=vosk_german) -- see requirements-runtime.txt's own
+    # comment for the full explanation of this real, verified dependency
+    # footprint.
+    "vosk==0.3.45",
+    "cffi==2.1.1",
+    "requests==2.34.2",
+    "srt==3.5.3",
 ]
 
 [tool.pytest.ini_options]
@@ -113,6 +120,12 @@ ignore_missing_imports = true
 # app/speechcatcher_model.py only ever imports it lazily, at call time,
 # via importlib -- this override covers the module-path string used there.
 module = ["speechcatcher", "speechcatcher.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# vosk ships no py.typed marker/stubs (verified: `pip show vosk` / its own
+# wheel contents).
+module = ["vosk", "vosk.*"]
 ignore_missing_imports = true
 
 [tool.ruff]

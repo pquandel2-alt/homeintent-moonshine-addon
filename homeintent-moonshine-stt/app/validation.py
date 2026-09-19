@@ -46,7 +46,7 @@ KOKORO_CLAUSE_PAUSE_MAX = 2.0
 
 TTS_ENGINES = ("pocket_tts", "kokoro_onnx", "supertonic_3")
 
-STT_ENGINES = ("moonshine", "kroko", "speechcatcher_m", "speechcatcher_l")
+STT_ENGINES = ("moonshine", "kroko", "speechcatcher_m", "speechcatcher_l", "vosk_german")
 
 KROKO_THREADS_MIN = 1  # sherpa-onnx's own num_threads has no "0 = auto" mode
 KROKO_THREADS_MAX = 64

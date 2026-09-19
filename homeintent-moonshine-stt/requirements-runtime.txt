@@ -84,3 +84,18 @@ kaldiio==2.18.1
 jaconv==0.5.0
 pytorch-wpe==0.0.1
 ctc-segmentation==1.7.4
+
+# Vosk (stt_engine=vosk_german, see app/vosk_engine.py / app/vosk_model.py)
+# is a self-contained, CPU-only Kaldi-based ASR engine -- its own real
+# runtime dependency footprint (verified directly via `pip show vosk` after
+# a real install, not assumed) is exactly cffi, requests, srt, tqdm, and
+# websockets; no numpy/torch/CUDA dependency of its own (this add-on
+# already ships numpy/websockets/tqdm above at compatible versions).
+# manylinux (amd64) and aarch64 wheels for Python 3.11 both verified
+# available on PyPI at this version. srt is a pure-Python package with no
+# compiled extension (verified from its own setup.py), so it installs
+# identically on both architectures despite shipping only an sdist.
+vosk==0.3.45
+cffi==2.1.1
+requests==2.34.2
+srt==3.5.3
