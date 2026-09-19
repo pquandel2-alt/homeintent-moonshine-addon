@@ -142,7 +142,14 @@ jobs:
         # extraction failure.
         run: |
           docker cp .github/ci/safe_tar_extract_smoketest.py moonshine-test:/tmp/safe_tar_extract_smoketest.py
-          docker exec moonshine-test /opt/venv/bin/python3 /tmp/safe_tar_extract_smoketest.py
+          # PYTHONPATH=/ mirrors how the real entrypoint (`python3 -m app`,
+          # run from the image's `/` WORKDIR) resolves `app.*` imports: `/app`
+          # is a package directory, importable as `app` only when `/` is on
+          # sys.path. Running a plain script instead of `-m` puts the
+          # script's own directory (`/tmp`) on sys.path[0], not `/`, so
+          # `from app import ...` fails with `ModuleNotFoundError: No module
+          # named 'app'` without this.
+          docker exec -e PYTHONPATH=/ moonshine-test /opt/venv/bin/python3 /tmp/safe_tar_extract_smoketest.py
 
       - name: Container logs
         if: always()
