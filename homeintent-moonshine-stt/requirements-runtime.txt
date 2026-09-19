@@ -31,3 +31,56 @@ phonemizer==3.4.0
 # manylinux (amd64) and aarch64 wheels for Python 3.11 both verified
 # available on PyPI at this version.
 sherpa-onnx==1.13.8
+
+# Speechcatcher (stt_engine=speechcatcher_m/speechcatcher_l, see
+# app/speechcatcher_engine.py / app/speechcatcher_model.py) runs on Torch,
+# via its own git-only dependency chain (speechcatcher itself, plus its own
+# `espnet_streaming_decoder` and `espnet_model_zoo` forks -- none of the
+# three is published on PyPI; `pip index versions speechcatcher` returns no
+# result, verified). torch/torchaudio are installed separately, from
+# PyTorch's own CPU wheel index, in the SAME pip invocation as the plain
+# `torch` install above the requirements-runtime.txt install in the
+# Dockerfile (torchaudio is also only published on that index, not plain
+# PyPI, for a CPU-only build). The three git packages themselves are
+# installed with `--no-deps` in the Dockerfile, pinned to the exact commits
+# verified while building this add-on, AFTER every pinned dependency below
+# is already installed -- this keeps dependency resolution fully
+# deterministic instead of trusting each git repo's own (unpinned-ref)
+# transitive git dependencies at Docker build time.
+#
+# Every version below was verified (from this add-on's own development
+# sandbox) to have a manylinux wheel (manylinux2014, or the newer
+# manylinux_2_27/manylinux_2_28 tags -- both supported by this add-on's
+# Debian-based build image) for BOTH cp311-x86_64 and cp311-aarch64, EXCEPT
+# ctc-segmentation, which ships no wheels for any
+# platform and is compiled from its Cython/C sources at install time
+# (needs build-essential + python3-dev, already present in the Dockerfile
+# for Pocket TTS; verified this build succeeds without any extra system
+# package) and pyaudio, whose C extension needs PortAudio's headers (see
+# the Dockerfile's own `portaudio19-dev` addition) -- speechcatcher's own
+# CLI module unconditionally imports pyaudio at import time for its
+# (unused, by this add-on) live-microphone feature, so it must be
+# installable even though this add-on's Wyoming-driven code path never
+# calls into it.
+scipy==1.16.3
+soundfile==0.14.0
+six==1.17.0
+tqdm==4.70.1
+somajo==2.5.0
+sentencepiece==0.2.2
+pyyaml==6.0.3
+ffmpeg-python==0.2.0
+pyaudio==0.2.14
+python_speech_features==0.6
+typeguard==2.13.3
+einops==0.8.2
+hydra-core==1.3.7
+opt-einsum==3.4.0
+humanfriendly==10.0
+torch-complex==0.4.4
+librosa==0.11.0
+h5py==3.14.0
+kaldiio==2.18.1
+jaconv==0.5.0
+pytorch-wpe==0.0.1
+ctc-segmentation==1.7.4

@@ -1,7 +1,7 @@
 [project]
 name = "homeintent-moonshine-stt"
-version = "0.4.0"
-description = "German speech-to-text (Moonshine, Kroko) and text-to-speech (Kyutai Pocket TTS, Kokoro ONNX, Supertonic 3)"
+version = "0.5.0"
+description = "German speech-to-text (Moonshine, Kroko, Speechcatcher) and text-to-speech (Kyutai Pocket TTS, Kokoro ONNX, Supertonic 3)"
 requires-python = ">=3.11"
 dependencies = [
     "moonshine-voice==0.1.5",
@@ -15,6 +15,35 @@ dependencies = [
     "espeakng-loader==0.2.4",
     "phonemizer==3.4.0",
     "sherpa-onnx==1.13.8",
+    # Speechcatcher's own PyPI-installable transitive dependencies (see
+    # requirements-runtime.txt's own comment for the full explanation).
+    # Speechcatcher itself and its two git-only forks (espnet_streaming_decoder,
+    # espnet_model_zoo) are NOT listed here -- they are not on PyPI and are
+    # installed via pinned git commits in the Dockerfile instead (see
+    # app/speechcatcher_model.py's module docstring for why, and exactly
+    # which commits).
+    "scipy==1.16.3",
+    "soundfile==0.14.0",
+    "six==1.17.0",
+    "tqdm==4.70.1",
+    "somajo==2.5.0",
+    "sentencepiece==0.2.2",
+    "pyyaml==6.0.3",
+    "ffmpeg-python==0.2.0",
+    "pyaudio==0.2.14",
+    "python_speech_features==0.6",
+    "typeguard==2.13.3",
+    "einops==0.8.2",
+    "hydra-core==1.3.7",
+    "opt-einsum==3.4.0",
+    "humanfriendly==10.0",
+    "torch-complex==0.4.4",
+    "librosa==0.11.0",
+    "h5py==3.14.0",
+    "kaldiio==2.18.1",
+    "jaconv==0.5.0",
+    "pytorch-wpe==0.0.1",
+    "ctc-segmentation==1.7.4",
 ]
 
 [tool.pytest.ini_options]
@@ -46,8 +75,12 @@ disallow_untyped_defs = false
 disallow_incomplete_defs = false
 
 [[tool.mypy.overrides]]
-# PyYAML is only used by CI-only test helpers (verifying the fake
-# Supervisor stub against config.yaml), never by the shipped add-on itself.
+# PyYAML is used by CI-only test helpers (verifying the fake Supervisor
+# stub against config.yaml) -- this add-on's own code never imports it
+# directly. It IS now also a real runtime dependency transitively required
+# by Speechcatcher's dependency chain (hydra-core/espnet_streaming_decoder,
+# see requirements-runtime.txt), but nothing in this add-on's own source
+# imports it, so it ships no py.typed marker relevant to us here regardless.
 module = "yaml"
 ignore_missing_imports = true
 
@@ -70,6 +103,16 @@ ignore_missing_imports = true
 # sherpa_onnx ships no py.typed marker/stubs (its Python surface is a
 # pybind11 C extension).
 module = ["sherpa_onnx", "sherpa_onnx.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# speechcatcher (and its own git dependencies espnet_streaming_decoder/
+# espnet_model_zoo) is not installed in every environment that type-checks
+# this add-on (it is a heavy, git-only dependency -- see
+# requirements-runtime.txt) and ships no py.typed marker/stubs regardless.
+# app/speechcatcher_model.py only ever imports it lazily, at call time,
+# via importlib -- this override covers the module-path string used there.
+module = ["speechcatcher", "speechcatcher.*"]
 ignore_missing_imports = true
 
 [tool.ruff]

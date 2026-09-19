@@ -69,6 +69,62 @@ def test_kroko_selected_never_calls_moonshine_load_transcriber(monkeypatch) -> N
     assert called["moonshine"] is False
 
 
+def test_speechcatcher_selected_never_calls_moonshine_or_kroko_loaders(monkeypatch) -> None:
+    called = {"moonshine": False, "kroko": False}
+
+    def _fake_load_transcriber(**kwargs: object) -> object:
+        called["moonshine"] = True
+        raise RuntimeError("must not be called for stt_engine=speechcatcher_m")
+
+    def _fake_load_kroko_engine(*a: object, **k: object) -> object:
+        called["kroko"] = True
+        raise RuntimeError("must not be called for stt_engine=speechcatcher_m")
+
+    monkeypatch.setattr(main_module, "load_transcriber", _fake_load_transcriber)
+    monkeypatch.setattr(main_module, "load_kroko_engine", _fake_load_kroko_engine)
+
+    class _FakeSpeechcatcherEngine:
+        def set_keyterms(self, terms, fallback_terms=None):
+            return [], True
+
+    monkeypatch.setattr(
+        main_module, "load_speechcatcher_engine", lambda *a, **k: _FakeSpeechcatcherEngine()
+    )
+    monkeypatch.setattr(main_module, "_resolve_keyterms", lambda args: ([], []))
+
+    args = _base_args(stt_engine="speechcatcher_m")
+    result = main_module._load_and_bias_stt_engine(args)
+    assert result is not None
+    assert called == {"moonshine": False, "kroko": False}
+
+
+def test_moonshine_selected_never_calls_speechcatcher_loader(monkeypatch) -> None:
+    called = {"speechcatcher": False}
+
+    def _fake_load_speechcatcher_engine(*a: object, **k: object) -> object:
+        called["speechcatcher"] = True
+        raise RuntimeError("must not be called for stt_engine=moonshine")
+
+    monkeypatch.setattr(main_module, "load_speechcatcher_engine", _fake_load_speechcatcher_engine)
+
+    class _FakeEngine:
+        pass
+
+    monkeypatch.setattr(main_module, "MoonshineSttEngine", lambda *a, **k: _FakeEngine())
+    monkeypatch.setattr(main_module, "load_transcriber", lambda **k: object())
+    monkeypatch.setattr(main_module, "_resolve_keyterms", lambda args: ([], []))
+
+    def _fake_set_keyterms(self, terms, fallback_terms=None):
+        return [], True
+
+    monkeypatch.setattr(_FakeEngine, "set_keyterms", _fake_set_keyterms, raising=False)
+
+    args = _base_args(stt_engine="moonshine")
+    result = main_module._load_and_bias_stt_engine(args)
+    assert result is not None
+    assert called["speechcatcher"] is False
+
+
 def test_pocket_tts_selected_never_calls_other_tts_loaders(monkeypatch) -> None:
     called = {"kokoro": False, "supertonic": False}
     monkeypatch.setattr(

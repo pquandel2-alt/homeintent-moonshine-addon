@@ -9,7 +9,10 @@ configuration:
       bisherige Moonshine-Engine dieses Add-ons -- bei einem Update wird sie automatisch
       weiterverwendet. "kroko" ist eine neuere, streamingfähige deutsche Engine
       (Banafo/Kroko über sherpa-onnx); ihr Modell wird beim ersten Auswählen heruntergeladen.
-      Speechcatcher und Vosk sind geplant, aber noch nicht verfügbar.
+      "speechcatcher_m" und "speechcatcher_l" sind das mittlere bzw. große streamingfähige
+      Transformer-Modell des Speechcatcher-Projekts; beide laden ihr Modell beim ersten
+      Auswählen herunter und unterstützen anders als moonshine/kroko keine
+      Schlüsselbegriff-/Home-Assistant-Vokabular-Gewichtung.
   model:
     name: Moonshine-Modell
     description: >-
@@ -79,6 +82,17 @@ configuration:
     description: >-
       Nur relevant bei STT-Engine "kroko". Wie stark die obigen Schlüsselbegriffe/das
       Home-Assistant-Vokabular bevorzugt werden (sherpa-onnx-eigene Hotwords-Gewichtung).
+  speechcatcher_threads:
+    name: Speechcatcher-CPU-Threads
+    description: >-
+      Nur relevant bei STT-Engine "speechcatcher_m" oder "speechcatcher_l". 0 belässt
+      PyTorchs eigenen Standardwert unverändert.
+  speechcatcher_beam_size:
+    name: Speechcatcher-Beam-Size
+    description: >-
+      Nur relevant bei STT-Engine "speechcatcher_m" oder "speechcatcher_l". Breite der
+      Beam-Search im Streaming-Decoder; höhere Werte können genauer, aber langsamer sein. 5
+      ist Speechcatchers eigener Standardwert.
   tts_enabled:
     name: Sprachausgabe aktivieren
     description: >-

@@ -8,8 +8,10 @@ configuration:
       Which speech-to-text engine to run. "moonshine" (default) is the original Moonshine
       engine this add-on has always shipped -- upgrading keeps using it automatically. "kroko"
       is a newer streaming German engine (Banafo/Kroko via sherpa-onnx); its model is
-      downloaded the first time you select it. Speechcatcher and Vosk are planned but not
-      available yet.
+      downloaded the first time you select it. "speechcatcher_m" and "speechcatcher_l" are the
+      medium and large streaming Transformer models from the Speechcatcher project; both
+      download their model the first time you select them and, unlike moonshine/kroko, do not
+      support keyterm/Home Assistant vocabulary biasing.
   model:
     name: Moonshine model
     description: >-
@@ -77,6 +79,17 @@ configuration:
     description: >-
       Only relevant when STT engine is "kroko". How strongly the keyterms/Home Assistant
       vocabulary above are favored during recognition (sherpa-onnx's own hotwords scoring).
+  speechcatcher_threads:
+    name: Speechcatcher CPU threads
+    description: >-
+      Only relevant when STT engine is "speechcatcher_m" or "speechcatcher_l". 0 leaves
+      PyTorch's own default untouched.
+  speechcatcher_beam_size:
+    name: Speechcatcher beam size
+    description: >-
+      Only relevant when STT engine is "speechcatcher_m" or "speechcatcher_l". Beam search
+      width for the streaming decoder; higher can be more accurate but slower. 5 is
+      Speechcatcher's own default.
   tts_enabled:
     name: Enable text-to-speech
     description: Turns speech synthesis (talk-back) on or off. Off by default so upgrading never suddenly downloads a large voice model.

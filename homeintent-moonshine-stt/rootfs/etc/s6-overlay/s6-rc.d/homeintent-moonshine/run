@@ -10,6 +10,7 @@ export HF_HOME=/data/models/pocket-tts
 export KOKORO_ONNX_CACHE=/data/models/kokoro-onnx
 export KROKO_CACHE=/data/models/kroko
 export SUPERTONIC_CACHE=/data/models/supertonic
+export SPEECHCATCHER_CACHE=/data/models/speechcatcher
 
 # Read a config option, falling back to a hard-coded default (matching
 # config.yaml's own default) whenever the Supervisor value is absent,
@@ -62,6 +63,8 @@ SAVE_DEBUG_AUDIO=$(config_bool_or_default 'save_debug_audio' 'false')
 DEBUG_AUDIO_MAX_FILES=$(config_or_default 'debug_audio_max_files' '100')
 KROKO_THREADS=$(config_or_default 'kroko_threads' '1')
 KROKO_HOTWORDS_SCORE=$(config_or_default 'kroko_hotwords_score' '1.5')
+SPEECHCATCHER_THREADS=$(config_or_default 'speechcatcher_threads' '0')
+SPEECHCATCHER_BEAM_SIZE=$(config_or_default 'speechcatcher_beam_size' '5')
 TTS_ENABLED=$(config_bool_or_default 'tts_enabled' 'false')
 # MUST default to pocket_tts -- see config.yaml's own comment on this option.
 TTS_ENGINE=$(config_or_default 'tts_engine' 'pocket_tts')
@@ -125,6 +128,8 @@ FLAGS+=("--vad-threshold" "${VAD_THRESHOLD}")
 FLAGS+=("--debug-audio-max-files" "${DEBUG_AUDIO_MAX_FILES}")
 FLAGS+=("--kroko-threads" "${KROKO_THREADS}")
 FLAGS+=("--kroko-hotwords-score" "${KROKO_HOTWORDS_SCORE}")
+FLAGS+=("--speechcatcher-threads" "${SPEECHCATCHER_THREADS}")
+FLAGS+=("--speechcatcher-beam-size" "${SPEECHCATCHER_BEAM_SIZE}")
 FLAGS+=("--tts-engine" "${TTS_ENGINE}")
 FLAGS+=("--tts-model" "${TTS_MODEL}")
 FLAGS+=("--tts-voice" "${TTS_VOICE}")

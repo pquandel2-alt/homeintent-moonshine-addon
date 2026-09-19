@@ -46,10 +46,21 @@ KOKORO_CLAUSE_PAUSE_MAX = 2.0
 
 TTS_ENGINES = ("pocket_tts", "kokoro_onnx", "supertonic_3")
 
-STT_ENGINES = ("moonshine", "kroko")
+STT_ENGINES = ("moonshine", "kroko", "speechcatcher_m", "speechcatcher_l")
 
 KROKO_THREADS_MIN = 1  # sherpa-onnx's own num_threads has no "0 = auto" mode
 KROKO_THREADS_MAX = 64
+
+# Speechcatcher runs on Torch (like Pocket TTS), so 0 = auto follows the
+# same convention as TTS_THREADS_MIN/MAX above, not Kroko's sherpa-onnx
+# convention (which has no "0 = auto" mode).
+SPEECHCATCHER_THREADS_MIN = 0
+SPEECHCATCHER_THREADS_MAX = 64
+
+# Our own defensive UI bounds -- speechcatcher's own --beamsize CLI default
+# is 5 (verified from source); no documented upstream hard limit.
+SPEECHCATCHER_BEAM_SIZE_MIN = 1
+SPEECHCATCHER_BEAM_SIZE_MAX = 30
 
 SUPERTONIC_SPEED_MIN = 0.25
 SUPERTONIC_SPEED_MAX = 3.0
@@ -197,5 +208,23 @@ def validate_supertonic_threads(value: int) -> int:
         raise ValueError(
             f"supertonic_threads must be between {SUPERTONIC_THREADS_MIN} and "
             f"{SUPERTONIC_THREADS_MAX}, got {value}"
+        )
+    return value
+
+
+def validate_speechcatcher_threads(value: int) -> int:
+    if not (SPEECHCATCHER_THREADS_MIN <= value <= SPEECHCATCHER_THREADS_MAX):
+        raise ValueError(
+            f"speechcatcher_threads must be between {SPEECHCATCHER_THREADS_MIN} and "
+            f"{SPEECHCATCHER_THREADS_MAX}, got {value}"
+        )
+    return value
+
+
+def validate_speechcatcher_beam_size(value: int) -> int:
+    if not (SPEECHCATCHER_BEAM_SIZE_MIN <= value <= SPEECHCATCHER_BEAM_SIZE_MAX):
+        raise ValueError(
+            f"speechcatcher_beam_size must be between {SPEECHCATCHER_BEAM_SIZE_MIN} and "
+            f"{SPEECHCATCHER_BEAM_SIZE_MAX}, got {value}"
         )
     return value

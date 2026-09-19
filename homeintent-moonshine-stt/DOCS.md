@@ -28,24 +28,31 @@ over one Wyoming service.
 
 ### STT
 
-Two STT engines are available, selected via **stt_engine**:
+Four STT engines are available, selected via **stt_engine**:
 
 | Engine | Value | Streaming | Hotwords/HA vocabulary |
 |--------|-------|-----------|--------------------------|
 | Moonshine (default) | `moonshine` | yes | yes |
 | Kroko | `kroko` | yes | yes (sherpa-onnx hotwords) |
+| Speechcatcher M | `speechcatcher_m` | yes, block-granular | no |
+| Speechcatcher L | `speechcatcher_l` | yes, block-granular | no |
 
-Speechcatcher/Vosk German engines are planned but not yet available.
+Vosk is planned but not yet available.
 
 - **stt_enabled** (default `true`): enable speech-to-text.
-- **stt_engine** (default `moonshine`): `moonshine` or `kroko`. **Must stay
-  `moonshine` on upgrade** unless you explicitly opt in.
+- **stt_engine** (default `moonshine`): `moonshine`, `kroko`, `speechcatcher_m`,
+  or `speechcatcher_l`. **Must stay `moonshine` on upgrade** unless you explicitly opt in.
 - **model**: `tiny` (34M, faster, ~12% WER) or `small` (123M, ~7.5% WER, recommended).
-  Ignored for `stt_engine: kroko`.
+  Only relevant for `stt_engine: moonshine`.
 - **language**: `de` (German only).
 - **log_level**: `DEBUG`/`INFO`/`WARNING`/`ERROR`.
 - **kroko_threads** (default `1`), **kroko_hotwords_score** (default `1.5`):
-  sherpa-onnx tuning for the Kroko engine, ignored for `stt_engine: moonshine`.
+  sherpa-onnx tuning for the Kroko engine, ignored unless `stt_engine: kroko`.
+- **speechcatcher_threads** (default `0` = PyTorch's own default),
+  **speechcatcher_beam_size** (default `5`): tuning for Speechcatcher, ignored
+  unless `stt_engine` is `speechcatcher_m`/`speechcatcher_l`. Speechcatcher has
+  no hotword/HA-vocabulary mechanism -- `extra_keyterms`/HA vocabulary are
+  silently ignored (logged once at startup) when it is selected.
 
 ### TTS
 
@@ -269,5 +276,9 @@ This add-on's code, and Pocket TTS's own code, are licensed under the MIT Licens
   environment); review it yourself before commercial use.
 - Kroko German STT model weights: Apache License 2.0 (Banafo AI's
   Kroko-ASR, via sherpa-onnx).
+- Speechcatcher's own code (`speechcatcher_m`/`speechcatcher_l`): MIT License.
+  The model checkpoints' own Hugging Face Hub license field could not be
+  verified during this add-on's development (huggingface.co was unreachable
+  from the development environment); review it yourself before commercial use.
 - Supertonic 3 TTS model weights: MIT License (Supertone Inc.).
 - `sherpa-onnx` itself (runtime for Kroko + Supertonic 3): Apache-2.0.

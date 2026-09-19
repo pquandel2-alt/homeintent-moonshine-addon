@@ -94,8 +94,8 @@ The add-on is configured via Home Assistant's UI:
 | Option | Values | Default | Description |
 |--------|--------|---------|-------------|
 | **stt_enabled** | `true`/`false` | `true` | Enable speech-to-text (engine selected via `stt_engine`) |
-| **stt_engine** | `moonshine`, `kroko` | `moonshine` | Which STT engine to use. **Must stay `moonshine` on upgrade** unless you explicitly opt in — see [STT Engines](#stt-engines) |
-| **model** | `tiny`, `small` | `small` | Moonshine model size. Tiny = faster but less accurate, Small = better accuracy (recommended). Ignored for `stt_engine: kroko` |
+| **stt_engine** | `moonshine`, `kroko`, `speechcatcher_m`, `speechcatcher_l` | `moonshine` | Which STT engine to use. **Must stay `moonshine` on upgrade** unless you explicitly opt in — see [STT Engines](#stt-engines) |
+| **model** | `tiny`, `small` | `small` | Moonshine model size. Tiny = faster but less accurate, Small = better accuracy (recommended). Ignored unless `stt_engine: moonshine` |
 | **language** | `de` | `de` | Language (German only) |
 | **log_level** | `DEBUG`, `INFO`, `WARNING`, `ERROR` | `INFO` | Logging verbosity |
 | **log_transcripts** | `true`/`false` | `false` | Log recognized text. **Off by default** — enable only if you need to debug what was actually recognized |
@@ -109,25 +109,81 @@ The add-on is configured via Home Assistant's UI:
 | **decode_incomplete_lines** | `true`/`false` | `true` | Whether to decode and emit lines that haven't finished yet, for lower-latency partial results |
 | **save_debug_audio** | `true`/`false` | `false` | Save received audio to `/data/debug_audio` as WAV + JSON metadata for troubleshooting. **Off by default** — see [Privacy](#privacy) |
 | **debug_audio_max_files** | `1`–`10000` | `100` | Oldest-first retention limit for saved debug audio files |
-| **kroko_threads** | `1`–`64` | `1` | sherpa-onnx CPU threads for Kroko. Ignored for `stt_engine: moonshine` |
-| **kroko_hotwords_score** | `0.0`–`10.0` | `1.5` | sherpa-onnx's own hotwords-scoring strength for Kroko keyterm/HA-vocabulary biasing. Ignored for `stt_engine: moonshine` |
+| **kroko_threads** | `1`–`64` | `1` | sherpa-onnx CPU threads for Kroko. Ignored unless `stt_engine: kroko` |
+| **kroko_hotwords_score** | `0.0`–`10.0` | `1.5` | sherpa-onnx's own hotwords-scoring strength for Kroko keyterm/HA-vocabulary biasing. Ignored unless `stt_engine: kroko` |
+| **speechcatcher_threads** | `0`–`64` | `0` | PyTorch intra-op CPU threads for Speechcatcher (`0` = PyTorch's own default). Ignored unless `stt_engine: speechcatcher_m`/`speechcatcher_l` |
+| **speechcatcher_beam_size** | `1`–`30` | `5` | Beam search width for Speechcatcher's streaming decoder (`5` is upstream's own CLI default). Ignored unless `stt_engine: speechcatcher_m`/`speechcatcher_l` |
 
 ### STT Engines
 
-**Two** STT engines are available, selected with **stt_engine**:
+**Four** STT engines are available, selected with **stt_engine**:
 
 | Engine | `stt_engine` value | Runtime | Streaming | Hotwords/HA vocabulary | Notes |
 |--------|--------------------|---------|-----------|-------------------------|-------|
 | **Moonshine** (default) | `moonshine` | native (moonshine-voice) | yes | yes (`set_keyterms`) | Unchanged since v0.1 — kept as default for full backward compatibility |
 | **Kroko** | `kroko` | sherpa-onnx (ONNX Runtime) | yes | yes (sherpa-onnx hotwords, `modified_beam_search`) | German streaming Zipformer2-transducer ([Banafo/Kroko-ASR](https://huggingface.co/Banafo/Kroko-ASR)), added in v0.4.0 |
+| **Speechcatcher M** | `speechcatcher_m` | PyTorch (ESPnet-family streaming decoder) | yes, block-granular (see below) | **no** | Medium streaming Transformer ([Speechcatcher](https://github.com/speechcatcher-asr/speechcatcher)), added in v0.5.0 |
+| **Speechcatcher L** | `speechcatcher_l` | PyTorch (ESPnet-family streaming decoder) | yes, block-granular (see below) | **no** | Large streaming Transformer (same project), added in v0.5.0 |
 
-Speechcatcher and Vosk German engines are **planned but not available yet**.
+Vosk is still **planned but not available yet**.
 
 Selecting `stt_engine: kroko` downloads its model (from sherpa-onnx's own
 GitHub Release, `sherpa-onnx-streaming-zipformer-de-kroko-2025-08-06.tar.bz2`,
 Apache-2.0 licensed) to `/data/models/kroko/` the first time it's used, and
 only Kroko's model is loaded when it's selected — Moonshine's model is never
-loaded at the same time, and vice versa.
+loaded at the same time, and vice versa. The same "only the selected
+engine is ever loaded" rule applies to `speechcatcher_m`/`speechcatcher_l`.
+
+#### Speechcatcher (`speechcatcher_m` / `speechcatcher_l`)
+
+[Speechcatcher](https://github.com/speechcatcher-asr/speechcatcher) (MIT
+licensed) is a streaming Transformer ASR toolbox built around an
+ESPnet-family decoder. This add-on drives Speechcatcher's own
+`Speech2TextStreaming` Python object directly, in-process — not
+`speechcatcher_server`'s websocket layer, which is itself only a thin
+wrapper around the exact same object (see `app/speechcatcher_engine.py`'s
+module docstring).
+
+- **Decoder**: Speechcatcher 0.5.0 added an experimental, dependency-free
+  "native" decoder, but its own README still documents `--decoder espnet`
+  as the **default and stable** choice, with `native` explicitly labeled
+  *experimental*. This add-on therefore always uses the `espnet` decoder
+  path — Speechcatcher's own `espnet_streaming_decoder` package, a
+  from-scratch, "smaller footprint" extraction of ESPnet's streaming ASR
+  code (not the full `espnet` PyPI package).
+- **Streaming granularity**: genuinely incremental — audio is fed as it
+  arrives and the model decodes block by block (Tsunoo et al.,
+  "Streaming Transformer ASR with Blockwise Synchronous Beam Search"),
+  never buffered whole and decoded once at the end. This is *block*-
+  granular streaming (bounded by the model's own configured block size),
+  not sample-by-sample, but it is real incremental streaming, not batch
+  transcription dressed up as streaming.
+- **Hotwords / HA vocabulary**: **not supported.** Speechcatcher has no
+  keyword/context-biasing API anywhere in its dependency chain (verified
+  directly from source) — selecting `speechcatcher_m`/`speechcatcher_l`
+  logs "HA vocabulary not supported by engine speechcatcher_m"/`_l` once
+  at startup and never applies `extra_keyterms`/HA vocabulary.
+- **Models**: `speechcatcher_m` uses
+  `speechcatcher/speechcatcher_german_espnet_streaming_transformer_13k_train_size_m_raw_de_bpe1024`,
+  `speechcatcher_l` uses the `..._l_raw_de_bpe1024` variant — both exact
+  Hugging Face Hub repo ids from Speechcatcher's own `tags` table.
+  Downloaded to `/data/models/speechcatcher/` the first time each is
+  selected. Speechcatcher's own code is MIT licensed; this add-on's
+  network-restricted development sandbox could not reach huggingface.co to
+  independently confirm the model checkpoints' own license or exact file
+  size — check the model card on Hugging Face Hub if this matters for your
+  use case.
+- **Dependencies**: Speechcatcher and its own two forked git dependencies
+  (`espnet_streaming_decoder`, `espnet_model_zoo`) are not published on
+  PyPI and are installed from pinned git commits (see
+  `requirements-runtime.txt`'s own comment for the full explanation and
+  exact commits). This pulls in a meaningfully larger dependency set than
+  Kroko's single `sherpa-onnx` wheel — Torch/torchaudio (already a runtime
+  dependency for Pocket TTS), plus librosa, numba, scikit-learn, h5py,
+  kaldiio, hydra-core, and others. `ctc-segmentation` and `pyaudio` have no
+  prebuilt wheels and are compiled from source at image build time (needs
+  `build-essential`/`python3-dev`, already present, plus `portaudio19-dev`
+  for `pyaudio`, added for this feature).
 
 ### TTS Engines
 
@@ -494,6 +550,13 @@ Supertonic 3 TTS) is Apache-2.0 licensed.
 - **Kroko German STT model weights**: Apache License 2.0 (Banafo AI's
   Kroko-ASR, merged into sherpa-onnx upstream — see
   [Banafo/Kroko-ASR](https://huggingface.co/Banafo/Kroko-ASR)).
+- **Speechcatcher German STT model weights** (`speechcatcher_m`/`speechcatcher_l`):
+  Speechcatcher's own code is MIT licensed, but the exact license field on
+  the model checkpoints' own Hugging Face Hub pages
+  (`speechcatcher/speechcatcher_german_espnet_streaming_transformer_..._raw_de_bpe1024`)
+  could not be verified during this add-on's development — huggingface.co
+  was unreachable from this add-on's development sandbox. Review the model
+  cards yourself on Hugging Face Hub before commercial use.
 - **Supertonic 3 TTS model weights**: MIT License (verified directly from
   [supertone-inc/supertonic](https://github.com/supertone-inc/supertonic)'s
   own `LICENSE` file).
@@ -513,6 +576,7 @@ Issues and pull requests are welcome! Please ensure:
 - **Kokoro-82M / German "Martin" fine-tune**: https://huggingface.co/hexgrad/Kokoro-82M,
   https://huggingface.co/Godelaune/Kokoro-82M-ONNX-German-Martin
 - **Kroko-ASR**: https://huggingface.co/Banafo/Kroko-ASR
+- **Speechcatcher**: https://github.com/speechcatcher-asr/speechcatcher
 - **Supertonic**: https://github.com/supertone-inc/supertonic
 - **sherpa-onnx** (runs Kroko + Supertonic 3 in-process): https://github.com/k2-fsa/sherpa-onnx
 - **Wyoming Protocol**: https://github.com/rhasspy/wyoming

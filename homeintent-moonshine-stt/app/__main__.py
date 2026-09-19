@@ -32,6 +32,8 @@ from app.models import (
     load_transcriber,
 )
 from app.moonshine_engine import MoonshineSttEngine
+from app.speechcatcher_engine import SpeechcatcherSttEngine, load_speechcatcher_engine
+from app.speechcatcher_model import SpeechcatcherModelDownloadError
 from app.stt_engine import SttEngine
 from app.supertonic_session import SupertonicSynthesizer
 from app.supertonic_tts import (
@@ -52,6 +54,8 @@ from app.validation import (
     validate_kokoro_speed,
     validate_kokoro_threads,
     validate_kroko_threads,
+    validate_speechcatcher_beam_size,
+    validate_speechcatcher_threads,
     validate_stt_engine,
     validate_supertonic_speed,
     validate_supertonic_steps,
@@ -70,7 +74,7 @@ logging.basicConfig(
 )
 _LOGGER = logging.getLogger(__name__)
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -89,7 +93,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--stt-engine",
-        choices=["moonshine", "kroko"],
+        choices=["moonshine", "kroko", "speechcatcher_m", "speechcatcher_l"],
         # MUST default to moonshine: an existing installation's persisted
         # options.json predates this option entirely, and Supervisor's own
         # schema-default resolution is not something this add-on can
@@ -151,6 +155,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=1.5,
         help="sherpa-onnx hotwords_score for Kroko keyterm/HA-vocabulary biasing",
+    )
+    parser.add_argument(
+        "--speechcatcher-threads",
+        type=int,
+        default=0,
+        help="torch intra-op CPU threads for Speechcatcher (0 = PyTorch's own default; "
+        "ignored unless stt_engine is speechcatcher_m/speechcatcher_l)",
+    )
+    parser.add_argument(
+        "--speechcatcher-beam-size",
+        type=int,
+        default=5,
+        help="Beam search width for Speechcatcher's streaming decoder (upstream's own "
+        "--beamsize default is 5; ignored unless stt_engine is speechcatcher_m/speechcatcher_l)",
     )
 
     parser.add_argument(
@@ -303,6 +321,8 @@ def _load_json_config_overrides(args: argparse.Namespace) -> bool:
             "debug_audio_max_files",
             "kroko_threads",
             "kroko_hotwords_score",
+            "speechcatcher_threads",
+            "speechcatcher_beam_size",
             "tts_enabled",
             "tts_engine",
             "tts_model",
@@ -428,6 +448,8 @@ def _validate_args(args: argparse.Namespace) -> bool:
         validate_kokoro_sentence_pause(args.kokoro_sentence_pause)
         validate_kokoro_clause_pause(args.kokoro_clause_pause)
         validate_kroko_threads(args.kroko_threads)
+        validate_speechcatcher_threads(args.speechcatcher_threads)
+        validate_speechcatcher_beam_size(args.speechcatcher_beam_size)
         validate_supertonic_speed(args.supertonic_speed)
         validate_supertonic_steps(args.supertonic_steps)
         validate_supertonic_threads(args.supertonic_threads)
@@ -467,6 +489,15 @@ def _log_startup_banner(
         _LOGGER.info("STT: engine=%s", args.stt_engine)
         if args.stt_engine == "kroko":
             _LOGGER.info("STT: language=%s threads=%d", args.language, args.kroko_threads)
+        elif args.stt_engine in ("speechcatcher_m", "speechcatcher_l"):
+            _LOGGER.info(
+                "STT: language=%s beam_size=%d threads=%s",
+                args.language,
+                args.speechcatcher_beam_size,
+                "auto (PyTorch default)"
+                if args.speechcatcher_threads == 0
+                else str(args.speechcatcher_threads),
+            )
         else:
             _LOGGER.info("STT: model=%s language=%s", args.model, args.language)
         _LOGGER.info("STT: HA vocabulary=%s", "enabled" if args.use_ha_vocabulary else "disabled")
@@ -744,6 +775,40 @@ def _load_kroko_engine(
     return engine, manual_keyterms, ha_terms, accepted
 
 
+def _load_speechcatcher_engine(
+    args: argparse.Namespace,
+) -> tuple[SpeechcatcherSttEngine, list[str], list[str], list[str]] | None:
+    """Resolve/download the selected Speechcatcher model
+    (speechcatcher_m/speechcatcher_l) and construct the engine. Returns
+    None on failure.
+
+    Same fail-loudly philosophy as the other STT/TTS engine loaders (see
+    _load_kroko_engine's docstring). Speechcatcher has no hotword/HA-
+    vocabulary mechanism (see app/speechcatcher_engine.py's module
+    docstring) -- ``set_keyterms()`` is still called for interface
+    consistency and to log a clear "not supported" message once at
+    startup, but it never actually biases recognition.
+    """
+    try:
+        engine = load_speechcatcher_engine(
+            args.stt_engine,
+            beam_size=args.speechcatcher_beam_size,
+            num_threads=args.speechcatcher_threads,
+        )
+    except SpeechcatcherModelDownloadError as e:
+        _LOGGER.error(f"Failed to download/load Speechcatcher model: {e}")
+        return None
+    except Exception as e:
+        _LOGGER.error(f"Failed to load Speechcatcher model: {e}")
+        return None
+
+    manual_keyterms, ha_terms = _resolve_keyterms(args)
+    effective_keyterms = merge_keyterms(ha_terms, manual_keyterms)
+    accepted, _ = engine.set_keyterms(effective_keyterms)
+
+    return engine, manual_keyterms, ha_terms, accepted
+
+
 def _load_and_bias_stt_engine(
     args: argparse.Namespace,
 ) -> tuple[SttEngine, list[str], list[str], list[str]] | None:
@@ -751,6 +816,8 @@ def _load_and_bias_stt_engine(
     failure (see each loader's own docstring)."""
     if args.stt_engine == "kroko":
         return _load_kroko_engine(args)
+    if args.stt_engine in ("speechcatcher_m", "speechcatcher_l"):
+        return _load_speechcatcher_engine(args)
     return _load_moonshine_engine(args)
 
 

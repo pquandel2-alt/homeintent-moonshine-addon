@@ -23,7 +23,7 @@ def _load_config_yaml() -> dict[str, Any]:
 def test_stt_engine_default_is_moonshine_in_config_yaml() -> None:
     config = _load_config_yaml()
     assert config["options"]["stt_engine"] == "moonshine"
-    assert config["schema"]["stt_engine"] == "list(moonshine|kroko)"
+    assert config["schema"]["stt_engine"] == "list(moonshine|kroko|speechcatcher_m|speechcatcher_l)"
 
 
 def test_tts_engine_schema_includes_supertonic_3() -> None:
@@ -75,8 +75,24 @@ def test_validate_args_rejects_unknown_stt_engine() -> None:
     assert _validate_args(args) is False
 
 
-@pytest.mark.parametrize("engine", ["moonshine", "kroko"])
+@pytest.mark.parametrize("engine", ["moonshine", "kroko", "speechcatcher_m", "speechcatcher_l"])
 def test_validate_args_accepts_known_stt_engines(engine: str) -> None:
     parser = build_arg_parser()
     args = parser.parse_args(["--stt-engine", engine])
     assert _validate_args(args) is True
+
+
+def test_old_config_without_speechcatcher_options_falls_back_to_defaults(tmp_path: Path) -> None:
+    """Simulates an add-on upgrade: a persisted config JSON that predates
+    the speechcatcher_threads/speechcatcher_beam_size options entirely must
+    still resolve to their config.yaml defaults."""
+    import json
+
+    config_file = tmp_path / "options.json"
+    config_file.write_text(json.dumps({"stt_enabled": True, "stt_engine": "moonshine"}))
+
+    parser = build_arg_parser()
+    args = parser.parse_args(["--config", str(config_file)])
+    assert _load_json_config_overrides(args) is True
+    assert args.speechcatcher_threads == 0
+    assert args.speechcatcher_beam_size == 5

@@ -1,5 +1,104 @@
 # Changelog - HomeIntent Moonshine Voice Add-on
 
+## [0.5.0] - 2026-09-19
+
+Adds two more user-selectable STT engines, **Speechcatcher M** and
+**Speechcatcher L** (`speechcatcher_m`/`speechcatcher_l`), behind the same
+`SttEngine`/`SttSession` abstraction introduced in v0.4.0. Moonshine,
+Kroko, Pocket TTS, Kokoro ONNX, and Supertonic 3 are unchanged and remain
+their previous defaults; upgrading requires no action.
+
+### Added
+- **New STT engines: Speechcatcher M and L** (`app/speechcatcher_engine.py`,
+  `app/speechcatcher_model.py`), a streaming Transformer ASR toolbox
+  ([Speechcatcher](https://github.com/speechcatcher-asr/speechcatcher),
+  MIT). Both variants share the exact same engine/session implementation;
+  only the model checkpoint differs (constructor parameter, not
+  duplicated code). Run in-process by driving Speechcatcher's own
+  `Speech2TextStreaming` object directly -- NOT `speechcatcher_server`'s
+  websocket layer, which is itself only a thin wrapper around that same
+  object (verified directly from its source). Real, incremental,
+  block-granular streaming decode (Tsunoo et al.'s "Streaming Transformer
+  ASR with Blockwise Synchronous Beam Search"), never buffer-whole-then-
+  decode-once.
+  - **Decoder choice**: uses Speechcatcher's own `espnet_streaming_decoder`
+    package (a from-scratch, "smaller footprint" extraction of ESPnet's
+    streaming code -- NOT the full `espnet` PyPI package) via
+    `decoder_impl="espnet"`. Speechcatcher 0.5.0 added an experimental,
+    dependency-free "native" decoder, but its own README still documents
+    `--decoder espnet` as the default/stable choice and labels `native`
+    explicitly experimental -- this add-on's own policy is to only use a
+    lighter decoder when it is the officially, stably supported one, so
+    `native` is deliberately not used here.
+  - **Models**: `speechcatcher_m` ->
+    `speechcatcher/speechcatcher_german_espnet_streaming_transformer_13k_train_size_m_raw_de_bpe1024`,
+    `speechcatcher_l` -> the `..._l_raw_de_bpe1024` variant (exact tags
+    from Speechcatcher's own `tags` table). Downloaded to
+    `/data/models/speechcatcher/` only when selected, via
+    `huggingface_hub.snapshot_download()` (through Speechcatcher's own
+    `espnet_model_zoo` fork's `ModelDownloader`) -- the same atomic,
+    resumable caching mechanism already used by Pocket TTS/Kokoro ONNX,
+    not a new download mechanism.
+  - **No hotword/HA-vocabulary support**: verified directly from source
+    that nothing in Speechcatcher's dependency chain exposes a keyword/
+    context-biasing API ("contextual" there refers only to the contextual
+    *block* streaming encoder architecture). `set_keyterms()` logs "HA
+    vocabulary not supported by engine speechcatcher_m"/`_l` once and
+    never pretends to apply anything -- `supports_hotwords=False`,
+    `supports_dynamic_vocabulary=False`.
+  - Only the selected engine is ever loaded (covered by
+    `app/tests/test_engine_dispatch.py`).
+- **New Speechcatcher options**: `speechcatcher_threads` (default `0` =
+  PyTorch's own default), `speechcatcher_beam_size` (default `5`).
+- **New runtime dependencies**: Speechcatcher and its own two git-only
+  forks (`espnet_streaming_decoder`, `espnet_model_zoo`) are not on PyPI
+  and are installed from pinned git commits (see `requirements-runtime.txt`
+  for the exact commits and full reasoning). Their own PyPI-installable
+  transitive dependencies are pinned in the same file: `torch`/`torchaudio`
+  (from PyTorch's CPU wheel index, alongside the pre-existing `torch`
+  install for Pocket TTS), `scipy`, `soundfile`, `six`, `tqdm`, `somajo`,
+  `sentencepiece`, `pyyaml`, `ffmpeg-python`, `pyaudio`,
+  `python_speech_features`, `typeguard`, `einops`, `hydra-core`,
+  `opt-einsum`, `humanfriendly`, `torch-complex`, `librosa`, `h5py`,
+  `kaldiio`, `jaconv`, `pytorch-wpe`, and `ctc-segmentation`. Verified
+  manylinux2014 wheels exist for cp311 on both x86_64 and aarch64 for every
+  one of these except `ctc-segmentation` (no prebuilt wheels on any
+  platform; compiles from its Cython/C sources at install time, using the
+  `build-essential`/`python3-dev` packages already present) and `pyaudio`
+  (needs PortAudio's headers; `portaudio19-dev` added to the Dockerfile).
+  This is a meaningfully larger dependency footprint than Kroko's single
+  `sherpa-onnx` wheel; flagged here explicitly rather than silently grown.
+- **Dockerfile**: installs `git` and `portaudio19-dev` (new system
+  packages), installs `torchaudio` alongside the existing `torch` CPU-only
+  install, and installs the three pinned Speechcatcher git packages with
+  `--no-deps` after every other pinned dependency (deterministic
+  resolution, no reliance on those repos' own unpinned transitive git
+  refs). New `SPEECHCATCHER_CACHE=/data/models/speechcatcher` env var,
+  matching the existing per-engine cache-directory pattern.
+- Config schema: `stt_engine` enum extended to
+  `list(moonshine|kroko|speechcatcher_m|speechcatcher_l)`; default remains
+  `moonshine` (verified: an old persisted config with no `stt_engine` key
+  still resolves to `moonshine` through both the CLI default and rootfs's
+  `config_or_default()` fallback).
+- Tests: `app/tests/test_speechcatcher_engine.py`,
+  `app/tests/test_speechcatcher_model.py` (fake-double unit tests, no real
+  model download), `app/tests/test_e2e_speechcatcher_stt.py` (gated behind
+  `RUN_SPEECHCATCHER_E2E=1`, mirrors `test_e2e_kroko_stt.py`), plus
+  extended `test_engine_dispatch.py`/`test_config_stt_engine_option.py`
+  coverage for the two new engine ids.
+
+### Known limitations
+- Speechcatcher's own model checkpoints' Hugging Face Hub license field
+  could not be independently verified (huggingface.co was unreachable from
+  this add-on's development sandbox) -- Speechcatcher's own code is MIT,
+  but review the model cards yourself before commercial use.
+- The real end-to-end Speechcatcher test
+  (`app/tests/test_e2e_speechcatcher_stt.py`) was not run during
+  development -- it needs the full, heavy dependency stack installed and
+  network access to Hugging Face Hub, neither of which was available in
+  this add-on's development sandbox. Run it explicitly
+  (`RUN_SPEECHCATCHER_E2E=1 pytest -m e2e`) before relying on it.
+
 ## [0.4.0] - 2026-09-18
 
 Adds a second, user-selectable STT engine (**Kroko**, via sherpa-onnx) and a

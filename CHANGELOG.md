@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.5.0] - 2026-09-19
+
+Adds two more user-selectable STT engines, **Speechcatcher M** and
+**Speechcatcher L** (`speechcatcher_m`/`speechcatcher_l`), a streaming
+Transformer ASR toolbox driven in-process via its own `Speech2TextStreaming`
+object (real, block-granular incremental streaming decode -- not
+`speechcatcher_server`'s websocket layer, which is itself only a thin
+wrapper around that same object). Uses Speechcatcher's own current, stable
+ESPnet-family decoder (`espnet_streaming_decoder`, a lighter, from-scratch
+extraction of ESPnet's streaming code, not the full `espnet` package); its
+newer "native" decoder was deliberately NOT used since upstream's own
+README still labels it experimental. Speechcatcher has no hotword/HA-
+vocabulary mechanism -- this is honestly reported via the `SttCapabilities`
+abstraction, not faked. Models are downloaded on demand, only when
+explicitly selected, into `/data/models/speechcatcher/`. Moonshine, Kroko,
+Pocket TTS, Kokoro ONNX, and Supertonic 3 are unchanged; the default
+(`stt_engine: moonshine`) is unchanged for full backward compatibility.
+
+Speechcatcher and its own two git-only forked dependencies
+(`espnet_streaming_decoder`, `espnet_model_zoo`) are not published on PyPI
+and pull in a meaningfully larger dependency set than Kroko's single
+`sherpa-onnx` wheel (Torch/torchaudio, librosa, numba, scikit-learn, h5py,
+kaldiio, and others) -- see `homeintent-moonshine-stt/CHANGELOG.md` for the
+full dependency/build-time breakdown.
+
+See `homeintent-moonshine-stt/CHANGELOG.md` for full details.
+
 ## [0.4.0] - 2026-09-18
 
 Adds a second, user-selectable STT engine (**Kroko**, via sherpa-onnx,
