@@ -202,6 +202,7 @@ jobs:
           python-version: "3.11"
 
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
       - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
 
       - name: Transcribe the fixed audio fixture and check the result
@@ -234,6 +235,7 @@ jobs:
           python-version: "3.11"
 
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
       - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
 
       - name: Synthesize German text with Pocket TTS and check the audio
@@ -259,6 +261,7 @@ jobs:
         with:
           python-version: "3.11"
 
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
       - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
 
       - name: Synthesize German text with Kokoro ONNX and check the audio
@@ -283,6 +286,7 @@ jobs:
         with:
           python-version: "3.11"
 
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
       - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
 
       - name: Transcribe real German audio with Kroko and check the result
@@ -311,6 +315,7 @@ jobs:
           python-version: "3.11"
 
       - run: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
       - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
       # Speechcatcher itself and its two git-only forks are not on PyPI --
       # installed the same way, and pinned to the same exact commits, as
@@ -343,6 +348,7 @@ jobs:
         with:
           python-version: "3.11"
 
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
       - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
 
       - name: Transcribe real German audio with Vosk and check the result
@@ -367,6 +373,7 @@ jobs:
         with:
           python-version: "3.11"
 
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
       - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
 
       - name: Synthesize German text with Supertonic 3 and check the audio
@@ -395,6 +402,7 @@ jobs:
         with:
           python-version: "3.11"
 
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
       - run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
           pip install scipy pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
