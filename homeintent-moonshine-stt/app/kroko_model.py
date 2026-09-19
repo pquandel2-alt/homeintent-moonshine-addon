@@ -36,7 +36,6 @@ ambiguous. This is a deliberate, honestly-documented choice, not a
 guess dressed up as certainty.
 """
 
-import inspect
 import logging
 import os
 import shutil
@@ -46,30 +45,9 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-_LOGGER = logging.getLogger(__name__)
+from app.safe_tar_extract import UnsafeTarMemberError, safe_extractall
 
-# v0.6.2: feature-detected ONCE at import time (cheap, one-time -- not
-# per-call/per-request overhead), not a `sys.version_info` guess. This is
-# the real production bug this add-on shipped in v0.6.1: CPython's own
-# `filter=` keyword argument to `TarFile.extractall()` (PEP 706, CVE-2007-4559
-# hardening) was added in 3.12 and backported upstream to 3.10.12/3.11.4 --
-# but Debian bookworm's `apt install python3.11` (what this add-on's own
-# Dockerfile installs the real image runs on, via
-# `ghcr.io/home-assistant/{amd64,aarch64}-base-debian:bookworm`) ships
-# python3.11 packaged from upstream 3.11.2 (verified: Debian's own package
-# page lists the bookworm python3.11 package version as based on 3.11.2,
-# predating the 3.11.4 backport) and Debian's own security-patch releases
-# (the `+deb12uN` suffix) did not backport this specific upstream feature
-# backport into that package -- so the real add-on image's `python3.11` has
-# no `filter=` parameter on `TarFile.extractall()` at all, while this
-# repo's own CI (`actions/setup-python@v4` with `python-version: "3.11"`,
-# which resolves to a recent python.org-built 3.11.x release, well past
-# 3.11.4) does have it -- which is exactly why CI's own Kroko E2E test
-# never caught this before it shipped in a real production add-on install
-# (see the v0.6.2 CHANGELOG entry, and the new container-level smoke test
-# in .github/workflows/build.yml's build-amd64 job, added specifically to
-# close this CI-vs-real-image gap).
-_EXTRACTALL_SUPPORTS_FILTER = "filter" in inspect.signature(tarfile.TarFile.extractall).parameters
+_LOGGER = logging.getLogger(__name__)
 
 DEFAULT_KROKO_CACHE_DIR = Path(os.environ.get("KROKO_CACHE", "/data/models/kroko"))
 
@@ -137,79 +115,6 @@ def _find_one(directory: Path, patterns: list[str], label: str) -> Path:
     return candidates[0]
 
 
-class _UnsafeTarMemberError(Exception):
-    """Raised internally when a tar member fails the legacy safety checks."""
-
-
-def _reject_unsafe_member(member: tarfile.TarInfo, destination: Path) -> None:
-    """Validate a single tar member against ``destination``, raising on any
-    unsafe/unsupported member. Only plain regular files and directories are
-    ever allowed through -- this Kroko archive only ever needs those, so
-    the legacy fallback is deliberately conservative and rejects every
-    other member type outright (symlinks, hardlinks, device files, FIFOs,
-    or anything tarfile doesn't already recognize as a plain type).
-    """
-    name = member.name
-
-    if Path(name).is_absolute():
-        raise _UnsafeTarMemberError(f"tar member has an absolute path: {name!r}")
-
-    # Resolve the member's real destination path and verify it stays inside
-    # ``destination`` -- via Path.is_relative_to() against *resolved* paths,
-    # not a naive string-prefix check (which has known bypass edge cases,
-    # e.g. a sibling directory that merely shares a prefix like
-    # "dest-evil" vs "dest").
-    resolved_destination = destination.resolve()
-    member_path = (destination / name).resolve()
-    if not member_path.is_relative_to(resolved_destination):
-        raise _UnsafeTarMemberError(
-            f"tar member resolves outside the extraction destination: {name!r}"
-        )
-
-    if member.issym() or member.islnk():
-        raise _UnsafeTarMemberError(f"tar member is a symlink/hardlink, rejected: {name!r}")
-    if member.ischr() or member.isblk():
-        raise _UnsafeTarMemberError(f"tar member is a device file, rejected: {name!r}")
-    if member.isfifo():
-        raise _UnsafeTarMemberError(f"tar member is a FIFO, rejected: {name!r}")
-    if not (member.isreg() or member.isdir()):
-        raise _UnsafeTarMemberError(
-            f"tar member is not a regular file or directory, rejected: {name!r} "
-            f"(type={member.type!r})"
-        )
-
-
-def _safe_extractall_legacy(tf: tarfile.TarFile, destination: Path) -> None:
-    """Safe stand-in for ``TarFile.extractall(destination, filter="data")``
-    on Python runtimes whose ``tarfile.TarFile.extractall`` doesn't accept a
-    ``filter=`` keyword argument at all (see ``_EXTRACTALL_SUPPORTS_FILTER``'s
-    docstring above for exactly which runtime that is and why).
-
-    Every member is validated FIRST, before anything is extracted: this
-    ensures a rejected archive never leaves partial content behind, on top
-    of (not instead of) the atomic download-to-temp-dir-then-move pattern
-    ``_download_and_extract`` already uses.
-
-    Rejects: absolute paths, path traversal outside ``destination``,
-    symlinks, hardlinks, device files (character/block), FIFOs, and any
-    other non-regular-file/non-directory member. This is deliberately
-    conservative -- the real Kroko archive only ever contains plain files
-    and directories, so nothing else needs to be allowed through.
-    """
-    destination.mkdir(parents=True, exist_ok=True)
-    members = tf.getmembers()
-    for member in members:
-        try:
-            _reject_unsafe_member(member, destination)
-        except _UnsafeTarMemberError as err:
-            raise KrokoModelDownloadError(
-                f"Refusing to extract unsafe Kroko model archive member: {err}"
-            ) from err
-
-    # All members validated -- safe to extract the whole archive now.
-    tf.extractall(destination)  # noqa: S202 - every member pre-validated above
-
-
 def _download_and_extract(url: str, dest_dir: Path) -> None:
     """Download ``url`` to a temp file and extract it into ``dest_dir``.
 
@@ -236,14 +141,11 @@ def _download_and_extract(url: str, dest_dir: Path) -> None:
         extract_dir.mkdir()
         try:
             with tarfile.open(archive_path) as tf:
-                if _EXTRACTALL_SUPPORTS_FILTER:
-                    tf.extractall(extract_dir, filter="data")  # noqa: S202
-                    _LOGGER.info("Kroko model extracted using: python-tar-filter")
-                else:
-                    _safe_extractall_legacy(tf, extract_dir)
-                    _LOGGER.info("Kroko model extracted using: safe-legacy-extractor")
-        except KrokoModelDownloadError:
-            raise
+                safe_extractall(tf, extract_dir, label="Kroko model")
+        except UnsafeTarMemberError as err:
+            raise KrokoModelDownloadError(
+                f"Refusing to extract unsafe Kroko model archive member: {err}"
+            ) from err
         except Exception as err:
             raise KrokoModelDownloadError(
                 f"Failed to extract Kroko model archive downloaded from '{url}': "
