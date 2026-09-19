@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.6.2] - 2026-09-19
+
+Critical production bugfix release: `stt_engine: kroko` failed to start on
+real Home Assistant installations. See `homeintent-moonshine-stt/CHANGELOG.md`
+for the full technical writeup. Summary: the real add-on Docker image (built
+on Debian bookworm) ships a `python3.11` whose `tarfile.TarFile.extractall()`
+does not accept the `filter=` keyword argument the Kroko model extraction
+code used unconditionally, so every real Kroko startup failed with
+`TypeError: TarFile.extractall() got an unexpected keyword argument
+'filter'` -- a mismatch this repo's own CI never caught because CI's Python
+(via `actions/setup-python@v4`) is a different, newer 3.11.x build that does
+support it. Fixed with a feature-detected safe fallback extractor (keeps the
+`filter="data"` security hardening wherever the runtime supports it, and
+adds an equivalent hand-rolled safety check -- rejecting path traversal,
+symlinks, hardlinks, and device/FIFO members -- for runtimes that don't),
+plus a new CI smoke test that exercises the real extraction code inside the
+actual built container image, closing the CI-vs-production gap that let this
+ship. No config or engine-matrix changes.
+
 ## [0.6.1] - 2026-09-19
 
 Stability/bugfix-only release. See `homeintent-moonshine-stt/CHANGELOG.md`

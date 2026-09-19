@@ -1,5 +1,75 @@
 # Changelog - HomeIntent Moonshine Voice Add-on
 
+## [0.6.2] - 2026-09-19
+
+Critical production bugfix release. No new engines, no new features -- see
+v0.6.0 for the full 5 STT x 3 TTS engine matrix, unchanged here.
+
+### Fixed
+- **`stt_engine: kroko` failed to start on real Home Assistant
+  installations**: a real production report showed startup failing on
+  every run with:
+
+  ```
+  TypeError: TarFile.extractall() got an unexpected keyword argument 'filter'
+  ```
+
+  **Root cause, verified concretely (not assumed)**: `app/kroko_model.py`
+  called `tarfile.TarFile.extractall(extract_dir, filter="data")`
+  unconditionally. The `filter=` keyword argument (PEP 706, hardening
+  against the tar path-traversal/symlink-escape family of issues tracked as
+  CVE-2007-4559) was added to CPython in 3.12 and backported upstream to
+  3.10.12/3.11.4. The real add-on image is built on
+  `ghcr.io/home-assistant/{amd64,aarch64}-base-debian:bookworm`, which
+  installs `python3.11` via `apt` -- and Debian bookworm's own
+  apt-packaged `python3.11` is built from upstream **3.11.2** (its own
+  `+deb12uN` security-patch releases did not backport this specific
+  upstream feature backport), i.e. it predates 3.11.4 and has no `filter=`
+  parameter on `TarFile.extractall()` at all. This repo's own CI
+  (`actions/setup-python@v4` with `python-version: "3.11"`) resolves to a
+  much newer python.org-built 3.11.x release that DOES have the parameter
+  -- confirmed directly in this repo's own development environment via
+  `inspect.signature(tarfile.TarFile.extractall)` -- which is exactly why
+  the existing Kroko E2E test (`test_e2e_kroko_stt.py`) never caught this:
+  it only ever ran under CI's Python, never inside the real built Docker
+  image.
+  - **Fix**: `_EXTRACTALL_SUPPORTS_FILTER` is now feature-detected once at
+    import time (`"filter" in
+    inspect.signature(tarfile.TarFile.extractall).parameters` -- not a
+    `sys.version_info` guess, and not a bare `except TypeError:` that could
+    silently swallow an unrelated real error). When the runtime supports
+    it, `filter="data"` is still used exactly as before -- this fix never
+    weakens that hardening where it's available. When it isn't, a new
+    `_safe_extractall_legacy()` validates every tar member BEFORE
+    extracting anything (rejecting absolute paths, `../` path traversal --
+    checked via `Path.is_relative_to()` against fully resolved paths, not a
+    naive string-prefix check -- symlinks, hardlinks, character/block
+    device files, FIFOs, and any other non-regular-file/non-directory
+    member) and only extracts once the whole archive passes. Both paths sit
+    inside the existing atomic download-to-temp-then-move pattern, which is
+    unchanged: a failed/rejected extraction still leaves no partial cache
+    directory behind.
+  - **New CI coverage for the actual gap that let this ship**: `build.yml`'s
+    `build-amd64` job now also runs a new smoke test *inside the actual
+    built container image* (`docker exec` against the running add-on
+    container's own venv Python, via `.github/ci/kroko_extract_smoketest.py`)
+    that builds a tiny synthetic `.tar.bz2` fixture (no real model
+    download) and calls the real `app.kroko_model._download_and_extract()`
+    against it, logging `python3 --version` and
+    `inspect.signature(tarfile.TarFile.extractall)` for visibility. This is
+    exactly the signal that would have caught this bug before it shipped.
+    `build-aarch64` stays build-only (it builds with `load: false` under
+    QEMU emulation, so there is no local image to exec into without adding
+    a real image load + paying full QEMU exec cost); the affected package
+    is architecture-independent, so amd64 coverage is accepted as
+    sufficient here.
+  - Added tests exercising both extraction paths directly (forcing the
+    legacy path via monkeypatching the feature-detection flag, independent
+    of whichever Python this test suite itself happens to run under), plus
+    a battery of rejection tests (path traversal, absolute path, symlink
+    escape, hardlink escape, FIFO, character/block device) each asserting
+    nothing is written outside the intended extraction destination.
+
 ## [0.6.1] - 2026-09-19
 
 Stability/bugfix-only release. No new engines, no new features -- see
