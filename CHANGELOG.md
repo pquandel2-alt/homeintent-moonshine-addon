@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.6.1] - 2026-09-19
+
+Stability/bugfix-only release. See `homeintent-moonshine-stt/CHANGELOG.md`
+for the full technical writeup. Summary: fixed an incomplete Speechcatcher
+dependency chain (missing `pandas`/`espnet`, verified by reproducing the
+real `ModuleNotFoundError` in a clean install), fixed a Speechcatcher
+concurrency bug where two simultaneous connections could corrupt each
+other's in-flight transcription state, made the periodic Home Assistant
+vocabulary refresh only run for engines that actually support it
+(Moonshine/Kroko, not Speechcatcher/Vosk), added the engine name to the STT
+performance log line, turned Supertonic's voice and quality-steps options
+into real dropdowns instead of free text, added a real end-to-end test for
+Supertonic's modern Wyoming streaming path, and added a fast CI job that
+catches a missing Speechcatcher dependency on every push instead of only in
+the slow release-gated end-to-end job. No new engines, no config renames,
+no breaking changes.
+
 ## [0.6.0] - 2026-09-19
 
 Adds a fifth and final user-selectable STT engine, **Vosk German**
