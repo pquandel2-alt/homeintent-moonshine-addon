@@ -1,6 +1,6 @@
 [project]
 name = "homeintent-moonshine-stt"
-version = "0.6.0"
+version = "0.6.1"
 description = "German speech-to-text (Moonshine, Kroko, Speechcatcher, Vosk) and text-to-speech (Kyutai Pocket TTS, Kokoro ONNX, Supertonic 3)"
 requires-python = ">=3.11"
 dependencies = [
@@ -21,7 +21,9 @@ dependencies = [
     # espnet_model_zoo) are NOT listed here -- they are not on PyPI and are
     # installed via pinned git commits in the Dockerfile instead (see
     # app/speechcatcher_model.py's module docstring for why, and exactly
-    # which commits).
+    # which commits). `espnet` (the real, full upstream package) is also not
+    # listed here for the same --no-deps reason (see requirements-runtime.txt).
+    "pandas==2.3.2",
     "scipy==1.16.3",
     "soundfile==0.14.0",
     "six==1.17.0",
@@ -119,7 +121,17 @@ ignore_missing_imports = true
 # requirements-runtime.txt) and ships no py.typed marker/stubs regardless.
 # app/speechcatcher_model.py only ever imports it lazily, at call time,
 # via importlib -- this override covers the module-path string used there.
-module = ["speechcatcher", "speechcatcher.*"]
+# espnet_streaming_decoder/espnet_model_zoo are also imported directly (not
+# lazily) by app/tests/test_speechcatcher_dependency_guard.py -- the v0.6.1
+# CI dependency/import guard -- for the same reason.
+module = [
+    "speechcatcher",
+    "speechcatcher.*",
+    "espnet_streaming_decoder",
+    "espnet_streaming_decoder.*",
+    "espnet_model_zoo",
+    "espnet_model_zoo.*",
+]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

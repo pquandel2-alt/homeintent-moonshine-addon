@@ -50,6 +50,21 @@ jobs:
           build-args: |
             BUILD_FROM=${{ steps.build_from.outputs.value }}
 
+      - name: Report built image size (transparency, no size gate)
+        # v0.6.1: honest, always-logged image-size reporting -- this add-on
+        # bakes in every engine's dependencies unconditionally (Moonshine,
+        # Kroko, Speechcatcher/torch/espnet, Vosk, Pocket TTS, Kokoro ONNX,
+        # Supertonic 3/sherpa-onnx), so its image is meaningfully larger
+        # than the original Moonshine-only add-on -- this step makes that
+        # size visible in every CI run rather than only discoverable by
+        # pulling the image. Informational only: it never fails the build.
+        run: |
+          size_bytes=$(docker image inspect homeintent-moonshine-stt:amd64-ci --format='{{.Size}}')
+          size_human=$(python3 -c "print(f'{${size_bytes} / (1024**3):.2f} GiB ({${size_bytes} / (1024**2):.1f} MiB)')")
+          echo "amd64 image size: ${size_bytes} bytes (${size_human})"
+          echo "### Docker image size (amd64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`homeintent-moonshine-stt:amd64-ci\`: ${size_bytes} bytes (${size_human})" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Create isolated network with a fake Supervisor API
         run: |
           docker network create moonshine-ci
@@ -324,7 +339,8 @@ jobs:
           pip install --no-deps \
             "git+https://github.com/speechcatcher-asr/espnet_streaming_decoder.git@76752e2eb37b68e4466fa65bae3a662ef1043f4c" \
             "git+https://github.com/speechcatcher-asr/espnet_model_zoo.git@e3f3c8f69794e3cacf0a88900f2c3d5f17360fae" \
-            "git+https://github.com/speechcatcher-asr/speechcatcher.git@1f647a43105b7167b6a47e7b2af2ef3c4ff53a2b"
+            "git+https://github.com/speechcatcher-asr/speechcatcher.git@1f647a43105b7167b6a47e7b2af2ef3c4ff53a2b" \
+            "espnet==202511"
 
       - name: Transcribe real German audio with Speechcatcher and check the result
         env:

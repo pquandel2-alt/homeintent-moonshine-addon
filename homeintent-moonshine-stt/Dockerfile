@@ -8,12 +8,21 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Install system dependencies
 #
 # portaudio19-dev: needed to build the `pyaudio` wheel (no prebuilt wheels
-# exist for it on PyPI, verified). pyaudio is a transitive dependency of
-# the `speechcatcher` package (see requirements-runtime.txt) -- its own CLI
-# module imports pyaudio unconditionally for a live-microphone feature this
-# add-on's Wyoming-driven code path never uses, but the import must still
-# succeed. Only pulled in when stt_engine=speechcatcher_m/speechcatcher_l;
-# harmless (a few hundred KB) for every other configuration.
+# exist for it on PyPI, verified). pyaudio is an ALWAYS-installed runtime
+# dependency pinned in requirements-runtime.txt -- this Docker image bakes
+# in every engine's Python dependencies unconditionally, regardless of
+# which `stt_engine`/`tts_engine` is actually selected at runtime (only the
+# MODEL files themselves are selectively downloaded per-engine, at first
+# use, into /data/models/*; the Python dependency set installed into the
+# image is static and identical for every configuration). So
+# portaudio19-dev/pyaudio are present in every build of this image, not
+# "only when stt_engine=speechcatcher_m/speechcatcher_l" -- they are only
+# ever *imported* (transitively, since speechcatcher's own CLI module
+# imports pyaudio unconditionally at import time for a live-microphone
+# feature this add-on's Wyoming-driven code path never calls into) when
+# Speechcatcher is the engine actually selected at runtime. A small system
+# package (a few hundred KB), so shipping it unconditionally has no
+# meaningful cost even for installations that never select Speechcatcher.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         python${PYTHON_VERSION} \
@@ -65,10 +74,26 @@ RUN pip install --no-cache-dir \
 # speechcatcher itself last. Commits pinned to the exact revisions this
 # add-on was verified against (see app/speechcatcher_model.py's module
 # docstring for what was verified from each).
+#
+# v0.6.1: `espnet` (the real, full upstream PyPI package -- NOT the
+# espnet_streaming_decoder fork above) is installed here too, also with
+# --no-deps, in the SAME invocation. It is a genuine, verified runtime
+# dependency of espnet_model_zoo's downloader.py
+# (`from espnet2.main_funcs.pack_funcs import ...`), found by actually
+# running `python3 -c "import speechcatcher.speechcatcher"` in a clean venv
+# and resolving every real ModuleNotFoundError (see
+# requirements-runtime.txt's own comment for the full root-cause writeup --
+# a previous version of this add-on was missing both this and pandas,
+# which IS listed in requirements-runtime.txt). Kept out of
+# requirements-runtime.txt's normal `pip install -r` step (which has no
+# --no-deps) because espnet's own declared dependencies would otherwise
+# conflict with/downgrade versions already pinned there (e.g. an older
+# sentencepiece).
 RUN pip install --no-cache-dir --no-deps \
     "git+https://github.com/speechcatcher-asr/espnet_streaming_decoder.git@76752e2eb37b68e4466fa65bae3a662ef1043f4c" \
     "git+https://github.com/speechcatcher-asr/espnet_model_zoo.git@e3f3c8f69794e3cacf0a88900f2c3d5f17360fae" \
-    "git+https://github.com/speechcatcher-asr/speechcatcher.git@1f647a43105b7167b6a47e7b2af2ef3c4ff53a2b"
+    "git+https://github.com/speechcatcher-asr/speechcatcher.git@1f647a43105b7167b6a47e7b2af2ef3c4ff53a2b" \
+    "espnet==202511"
 
 # Copy application
 WORKDIR /app
