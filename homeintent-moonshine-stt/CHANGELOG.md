@@ -1,5 +1,301 @@
 # Changelog - HomeIntent Moonshine Voice Add-on
 
+## [0.6.0] - 2026-09-19
+
+Adds a fifth and final user-selectable STT engine, **Vosk German**
+(`vosk_german`) -- the lightest-weight, lowest-CPU/RAM STT option this
+add-on offers -- completing the planned 5 STT x 3 TTS engine matrix. Also
+adds `app/stt_benchmark.py` (a cross-engine STT benchmark CLI) and extends
+`app/tts_benchmark.py` to cover Supertonic 3. Moonshine, Kroko,
+Speechcatcher M/L, Pocket TTS, Kokoro ONNX, and Supertonic 3 are unchanged
+and remain their previous defaults; upgrading requires no action.
+
+### Added
+- **New STT engine: Vosk German** (`app/vosk_engine.py`,
+  `app/vosk_model.py`), a Kaldi-based recognizer via the
+  [`vosk`](https://alphacephei.com/vosk/) PyPI package (Apache 2.0),
+  driven in-process through `vosk.KaldiRecognizer` -- no subprocess, no
+  separate container.
+  - **Streaming**: real, sample-incremental streaming -- every Wyoming
+    audio chunk is fed straight into `AcceptWaveform()` as it arrives
+    (verified directly from the installed wheel's own
+    `vosk/__init__.py` source), not buffered and decoded once at the end.
+    `FinalResult()` is called at `finalize()`.
+  - **Model**: `vosk-model-small-de-0.15` (~45MB, Apache License 2.0),
+    verified as the current recommended small German model against the
+    official model catalogue (alphacep/vosk-space's own `models.md`,
+    since alphacephei.com itself was unreachable from this add-on's
+    development sandbox) -- no smaller or newer small German model
+    supersedes it. Downloaded from
+    `https://alphacephei.com/vosk/models/vosk-model-small-de-0.15.zip`
+    (matching `vosk.MODEL_PRE_URL`'s own base URL) to
+    `/data/models/vosk/` only when `vosk_german` is selected, via an
+    atomic download-then-rename pattern identical to
+    `app/kroko_model.py`'s. A much larger `vosk-model-de-0.21` (1.9GB)
+    exists upstream but is deliberately NOT offered as a second option --
+    it would contradict this engine's entire reason for existing.
+  - **Hotwords / HA vocabulary -- investigated and deliberately NOT
+    wired up, not an unimplemented gap**: Vosk's `KaldiRecognizer` does
+    expose a grammar mechanism (a constructor grammar argument /
+    `SetGrammar()`, verified directly from the installed wheel's source
+    and from upstream's own Ruby binding docs, the clearest primary
+    documentation of its semantics), but it is a **hard closed-set
+    restriction** on the decoding graph (recognizes ONLY the given
+    phrases, plus a literal `"[unk]"` catch-all), not a soft bias/boost
+    like Moonshine's `set_keyterms()` or Kroko's sherpa-onnx hotwords.
+    Wiring the full, open-ended Home Assistant vocabulary into it would
+    break free-form recognition of everything else a user might say --
+    a strictly worse UX than no biasing. Honestly reported as
+    `supports_hotwords=False`/`supports_dynamic_vocabulary=False`
+    (`set_keyterms()` logs "HA vocabulary not supported by engine
+    vosk_german" and returns `([], True)`), matching Speechcatcher's own
+    precedent.
+  - **No CPU/GPU dependency of its own**: verified via a real install
+    (`pip show vosk`) that Vosk's only dependencies are `cffi`,
+    `requests`, `srt`, and `tqdm` -- no numpy/torch, and no CUDA/GPU
+    dependency (Kaldi's C++ decoder core is CPU-only in the plain PyPI
+    wheel; the `GpuInit`/`GpuThreadInit` calls its Python API exposes are
+    for a separately-built server variant this add-on never uses).
+  - **Deliberately minimal config surface**: no CPU-thread or beam-size
+    option -- `vosk.KaldiRecognizer` exposes neither for tuning, and this
+    engine's whole purpose is to be the simplest, lightest option.
+  - Only the selected engine is ever loaded (covered by
+    `app/tests/test_engine_dispatch.py`).
+- **New runtime dependencies**: `vosk==0.3.45`, plus its own real,
+  verified dependency footprint `cffi==2.1.1`, `requests==2.34.2`,
+  `srt==3.5.3` (`tqdm`/`websockets` were already pinned at compatible
+  versions). Verified manylinux/aarch64 wheels for cp311 exist for
+  `vosk`/`cffi`; `srt` is a pure-Python package with no compiled
+  extension (verified from its own `setup.py`), so it installs
+  identically on both architectures despite shipping only an sdist. A
+  full `pip install -r requirements-runtime.txt` (minus `pyaudio`, which
+  needs system PortAudio headers already handled by the Dockerfile) was
+  verified to resolve with no conflicts (`pip check`) against the entire
+  existing dependency stack (sherpa-onnx, onnxruntime, torch/torchaudio +
+  Speechcatcher's ESPnet-family chain, numpy, kokoro-onnx).
+- **`app/stt_benchmark.py`**: a new cross-engine STT benchmark CLI,
+  driven entirely through the shared `SttEngine`/`SttSession`
+  abstraction (`--engine moonshine|kroko|speechcatcher_m|speechcatcher_l|
+  vosk_german`) -- one code path for all five engines, not five separate
+  scripts. Reports audio duration, wall/model inference time, final-
+  result latency, RTF, and the raw transcript for manual inspection.
+  Does NOT compute a Word Error Rate (no ground-truth reference
+  transcript mechanism exists in this add-on's fixtures -- inventing one
+  would be dishonest). Time-to-first-partial-result is only reported for
+  an engine with `supports_partial_results=True`; none of the five
+  currently is, so it honestly prints "n/a" rather than a fabricated
+  number. Like `app/benchmark.py`/`app/tts_benchmark.py`, this is a
+  local, manual, run-on-your-own-hardware tool, not something CI runs or
+  a source of any numbers quoted in README/DOCS.
+- **`app/tts_benchmark.py` extended to cover Supertonic 3**
+  (`--engine supertonic_3`) -- an explicitly-reported gap from v0.4.0's
+  own development, now closed. Uses the exact same
+  `TtsSynthesizer`-interface measurement code as Pocket TTS/Kokoro ONNX,
+  not a separate code path.
+- Config schema: `stt_engine` enum extended to
+  `list(moonshine|kroko|speechcatcher_m|speechcatcher_l|vosk_german)`;
+  default remains `moonshine` (verified: an old persisted config with no
+  `stt_engine` key still resolves to `moonshine` through both the CLI
+  default and rootfs's `config_or_default()` fallback).
+- Dockerfile/rootfs run script: new `VOSK_CACHE=/data/models/vosk` env
+  var, matching the existing per-engine cache-directory pattern. No new
+  CLI flags needed (Vosk has no tunable options).
+- New CI e2e job `e2e-vosk-stt-transcribe` and
+  `app/tests/test_e2e_vosk_stt.py` (gated behind `RUN_VOSK_E2E=1`,
+  mirrors `test_e2e_kroko_stt.py`), plus new
+  `app/tests/test_vosk_engine.py`, `app/tests/test_vosk_model.py`,
+  `app/tests/test_stt_benchmark.py`, and extended
+  `test_engine_dispatch.py`/`test_config_stt_engine_option.py`/
+  `test_tts_benchmark.py` coverage.
+
+### Known limitations
+- The real end-to-end Vosk test (`app/tests/test_e2e_vosk_stt.py`) was
+  not run during development -- alphacephei.com was unreachable from this
+  add-on's development sandbox (only a git clone of alphacep/vosk-api and
+  alphacep/vosk-space was reachable, which is how the model name/API/
+  download-URL convention were verified). Run it explicitly
+  (`RUN_VOSK_E2E=1 pytest -m e2e`) before relying on it.
+- Real multi-arch (amd64 + aarch64) Docker builds and real hardware
+  benchmarks (both `app/stt_benchmark.py` and `app/tts_benchmark.py`) were
+  not performed in this add-on's development sandbox -- wheel
+  availability and dependency resolution were verified, but an actual
+  build and on-target-hardware benchmark run are needed before treating
+  this release as production-validated.
+
+## [0.5.0] - 2026-09-19
+
+Adds two more user-selectable STT engines, **Speechcatcher M** and
+**Speechcatcher L** (`speechcatcher_m`/`speechcatcher_l`), behind the same
+`SttEngine`/`SttSession` abstraction introduced in v0.4.0. Moonshine,
+Kroko, Pocket TTS, Kokoro ONNX, and Supertonic 3 are unchanged and remain
+their previous defaults; upgrading requires no action.
+
+### Added
+- **New STT engines: Speechcatcher M and L** (`app/speechcatcher_engine.py`,
+  `app/speechcatcher_model.py`), a streaming Transformer ASR toolbox
+  ([Speechcatcher](https://github.com/speechcatcher-asr/speechcatcher),
+  MIT). Both variants share the exact same engine/session implementation;
+  only the model checkpoint differs (constructor parameter, not
+  duplicated code). Run in-process by driving Speechcatcher's own
+  `Speech2TextStreaming` object directly -- NOT `speechcatcher_server`'s
+  websocket layer, which is itself only a thin wrapper around that same
+  object (verified directly from its source). Real, incremental,
+  block-granular streaming decode (Tsunoo et al.'s "Streaming Transformer
+  ASR with Blockwise Synchronous Beam Search"), never buffer-whole-then-
+  decode-once.
+  - **Decoder choice**: uses Speechcatcher's own `espnet_streaming_decoder`
+    package (a from-scratch, "smaller footprint" extraction of ESPnet's
+    streaming code -- NOT the full `espnet` PyPI package) via
+    `decoder_impl="espnet"`. Speechcatcher 0.5.0 added an experimental,
+    dependency-free "native" decoder, but its own README still documents
+    `--decoder espnet` as the default/stable choice and labels `native`
+    explicitly experimental -- this add-on's own policy is to only use a
+    lighter decoder when it is the officially, stably supported one, so
+    `native` is deliberately not used here.
+  - **Models**: `speechcatcher_m` ->
+    `speechcatcher/speechcatcher_german_espnet_streaming_transformer_13k_train_size_m_raw_de_bpe1024`,
+    `speechcatcher_l` -> the `..._l_raw_de_bpe1024` variant (exact tags
+    from Speechcatcher's own `tags` table). Downloaded to
+    `/data/models/speechcatcher/` only when selected, via
+    `huggingface_hub.snapshot_download()` (through Speechcatcher's own
+    `espnet_model_zoo` fork's `ModelDownloader`) -- the same atomic,
+    resumable caching mechanism already used by Pocket TTS/Kokoro ONNX,
+    not a new download mechanism.
+  - **No hotword/HA-vocabulary support**: verified directly from source
+    that nothing in Speechcatcher's dependency chain exposes a keyword/
+    context-biasing API ("contextual" there refers only to the contextual
+    *block* streaming encoder architecture). `set_keyterms()` logs "HA
+    vocabulary not supported by engine speechcatcher_m"/`_l` once and
+    never pretends to apply anything -- `supports_hotwords=False`,
+    `supports_dynamic_vocabulary=False`.
+  - Only the selected engine is ever loaded (covered by
+    `app/tests/test_engine_dispatch.py`).
+- **New Speechcatcher options**: `speechcatcher_threads` (default `0` =
+  PyTorch's own default), `speechcatcher_beam_size` (default `5`).
+- **New runtime dependencies**: Speechcatcher and its own two git-only
+  forks (`espnet_streaming_decoder`, `espnet_model_zoo`) are not on PyPI
+  and are installed from pinned git commits (see `requirements-runtime.txt`
+  for the exact commits and full reasoning). Their own PyPI-installable
+  transitive dependencies are pinned in the same file: `torch`/`torchaudio`
+  (from PyTorch's CPU wheel index, alongside the pre-existing `torch`
+  install for Pocket TTS), `scipy`, `soundfile`, `six`, `tqdm`, `somajo`,
+  `sentencepiece`, `pyyaml`, `ffmpeg-python`, `pyaudio`,
+  `python_speech_features`, `typeguard`, `einops`, `hydra-core`,
+  `opt-einsum`, `humanfriendly`, `torch-complex`, `librosa`, `h5py`,
+  `kaldiio`, `jaconv`, `pytorch-wpe`, and `ctc-segmentation`. Verified
+  manylinux2014 wheels exist for cp311 on both x86_64 and aarch64 for every
+  one of these except `ctc-segmentation` (no prebuilt wheels on any
+  platform; compiles from its Cython/C sources at install time, using the
+  `build-essential`/`python3-dev` packages already present) and `pyaudio`
+  (needs PortAudio's headers; `portaudio19-dev` added to the Dockerfile).
+  This is a meaningfully larger dependency footprint than Kroko's single
+  `sherpa-onnx` wheel; flagged here explicitly rather than silently grown.
+- **Dockerfile**: installs `git` and `portaudio19-dev` (new system
+  packages), installs `torchaudio` alongside the existing `torch` CPU-only
+  install, and installs the three pinned Speechcatcher git packages with
+  `--no-deps` after every other pinned dependency (deterministic
+  resolution, no reliance on those repos' own unpinned transitive git
+  refs). New `SPEECHCATCHER_CACHE=/data/models/speechcatcher` env var,
+  matching the existing per-engine cache-directory pattern.
+- Config schema: `stt_engine` enum extended to
+  `list(moonshine|kroko|speechcatcher_m|speechcatcher_l)`; default remains
+  `moonshine` (verified: an old persisted config with no `stt_engine` key
+  still resolves to `moonshine` through both the CLI default and rootfs's
+  `config_or_default()` fallback).
+- Tests: `app/tests/test_speechcatcher_engine.py`,
+  `app/tests/test_speechcatcher_model.py` (fake-double unit tests, no real
+  model download), `app/tests/test_e2e_speechcatcher_stt.py` (gated behind
+  `RUN_SPEECHCATCHER_E2E=1`, mirrors `test_e2e_kroko_stt.py`), plus
+  extended `test_engine_dispatch.py`/`test_config_stt_engine_option.py`
+  coverage for the two new engine ids.
+
+### Known limitations
+- Speechcatcher's own model checkpoints' Hugging Face Hub license field
+  could not be independently verified (huggingface.co was unreachable from
+  this add-on's development sandbox) -- Speechcatcher's own code is MIT,
+  but review the model cards yourself before commercial use.
+- The real end-to-end Speechcatcher test
+  (`app/tests/test_e2e_speechcatcher_stt.py`) was not run during
+  development -- it needs the full, heavy dependency stack installed and
+  network access to Hugging Face Hub, neither of which was available in
+  this add-on's development sandbox. Run it explicitly
+  (`RUN_SPEECHCATCHER_E2E=1 pytest -m e2e`) before relying on it.
+
+## [0.4.0] - 2026-09-18
+
+Adds a second, user-selectable STT engine (**Kroko**, via sherpa-onnx) and a
+third TTS engine (**Supertonic 3**, via sherpa-onnx), both real, in-process,
+streaming implementations behind a new generic `SttEngine`/`SttSession`
+abstraction that mirrors the existing `TtsSynthesizer` abstraction's design.
+Moonshine, Pocket TTS, and Kokoro ONNX are unchanged and remain the
+defaults; upgrading requires no action.
+
+### Added
+- **STT engine abstraction** (`app/stt_engine.py`): a generic
+  `SttEngine`/`SttSession` interface (`engine_id`, `capabilities`,
+  `program_name`, `create_session()`, `set_keyterms()`) that
+  `app/handler.py` depends on instead of a concrete Moonshine
+  `Transcriber` -- adding a future engine (Speechcatcher, Vosk) is now
+  one more implementation of this interface, not a new branch in the
+  handler.
+- **Moonshine adapter** (`app/moonshine_engine.py`): wraps the existing,
+  unmodified `app/models.py`/`app/streaming.py`/`app/keyterms.py` behind
+  the new interface with zero behavioral change -- model choice, keyterm
+  boosting, VAD, `decode_incomplete_lines`, and performance counters all
+  work exactly as before. `app/handler.py`'s `transcriber=` constructor
+  parameter is kept for backward compatibility with existing callers/tests.
+- **New STT engine: Kroko** (`app/kroko_engine.py`, `app/kroko_model.py`),
+  a German streaming Zipformer2-transducer model (Banafo AI's
+  [Kroko-ASR](https://huggingface.co/Banafo/Kroko-ASR), Apache-2.0,
+  merged into sherpa-onnx upstream) run in-process via
+  `sherpa_onnx.OnlineRecognizer.from_transducer()` -- real incremental
+  streaming (`accept_waveform()` per Wyoming audio-chunk), with dynamic
+  HA-vocabulary/keyterm biasing via sherpa-onnx's own per-stream hotwords
+  (`modified_beam_search` decoding). Selected via the new `stt_engine:
+  kroko` option; default remains `moonshine`. Model downloaded to
+  `/data/models/kroko/` only when selected, from sherpa-onnx's own GitHub
+  Release (`sherpa-onnx-streaming-zipformer-de-kroko-2025-08-06.tar.bz2`).
+- **New Kroko options**: `kroko_threads` (default `1`),
+  `kroko_hotwords_score` (default `1.5`).
+- **New TTS engine: Supertonic 3** (`app/supertonic_tts.py`,
+  `app/supertonic_session.py`), Supertone Inc.'s multilingual
+  ([supertone-inc/supertonic](https://github.com/supertone-inc/supertonic),
+  MIT-licensed) TTS system, run in-process via sherpa-onnx's INT8-quantized
+  export and its real native callback-streaming `generate()` API --
+  chunks are forwarded to the existing Wyoming AudioChunk pipeline exactly
+  like Pocket TTS/Kokoro, with no WAV round-trip. 10 built-in voices
+  (`M1`-`M5`/`F1`-`F5`); default `M1`. Selected via the new `tts_engine:
+  supertonic_3` option; default remains `pocket_tts`. Model downloaded to
+  `/data/models/supertonic/` only when `tts_enabled: true` AND
+  `tts_engine: supertonic_3`.
+- **New Supertonic options**: `supertonic_voice` (default `M1`),
+  `supertonic_speed`, `supertonic_steps` (default `8`),
+  `supertonic_threads` (default `1`).
+- **New runtime dependency**: `sherpa-onnx==1.13.8` (Apache-2.0), verified
+  to ship manylinux (amd64) and aarch64 wheels for Python 3.11, and to
+  bundle its own statically-linked ONNX Runtime build with no Python-level
+  `onnxruntime` dependency -- does not conflict with the
+  `onnxruntime==1.30.0` pin already used by Kokoro ONNX.
+- **Native Home Assistant translations** (`translations/en.yaml`,
+  `translations/de.yaml`): every visible config option now has a proper
+  display name and description in both languages, following the real
+  add-on translation structure (`configuration: <key>: {name,
+  description}`), instead of relying on `config.yaml`'s own raw option
+  names. The flat `config.yaml` schema itself is unchanged (no new,
+  currently-undocumented schema keywords were introduced) for full
+  upgrade compatibility.
+- Both `app/kroko_model.py`/`app/supertonic_tts.py` only ever load their
+  respective model when their engine is actually selected -- selecting
+  `moonshine`/`pocket_tts` (the defaults) never touches Kroko or
+  Supertonic code at all, verified by dedicated dispatch tests.
+
+### Changed
+- `app/handler.py` now takes an optional `stt_engine=` constructor
+  parameter (used for Kroko); the previous `transcriber=` parameter still
+  works unchanged for Moonshine and every existing caller/test.
+- Version bumped to 0.4.0 across `config.yaml`, `app/pyproject.toml`, and
+  `app/__main__.py`'s `VERSION`.
+
 ## [0.3.0] - 2026-09-18
 
 Adds **Kokoro German ONNX** as a second, user-selectable local TTS engine

@@ -8,6 +8,10 @@ export PYTHONUNBUFFERED=1
 export MOONSHINE_VOICE_CACHE=/data/models
 export HF_HOME=/data/models/pocket-tts
 export KOKORO_ONNX_CACHE=/data/models/kokoro-onnx
+export KROKO_CACHE=/data/models/kroko
+export SUPERTONIC_CACHE=/data/models/supertonic
+export SPEECHCATCHER_CACHE=/data/models/speechcatcher
+export VOSK_CACHE=/data/models/vosk
 
 # Read a config option, falling back to a hard-coded default (matching
 # config.yaml's own default) whenever the Supervisor value is absent,
@@ -42,6 +46,8 @@ config_bool_or_default() {
 # block exactly -- see app/tests/test_fake_supervisor_config_sync.py, which
 # fails CI if they drift apart.
 STT_ENABLED=$(config_bool_or_default 'stt_enabled' 'true')
+# MUST default to moonshine -- see config.yaml's own comment on this option.
+STT_ENGINE=$(config_or_default 'stt_engine' 'moonshine')
 MODEL=$(config_or_default 'model' 'small')
 LANGUAGE=$(config_or_default 'language' 'de')
 LOG_LEVEL=$(config_or_default 'log_level' 'INFO')
@@ -56,6 +62,10 @@ VAD_THRESHOLD=$(config_or_default 'vad_threshold' '0.5')
 DECODE_INCOMPLETE_LINES=$(config_bool_or_default 'decode_incomplete_lines' 'true')
 SAVE_DEBUG_AUDIO=$(config_bool_or_default 'save_debug_audio' 'false')
 DEBUG_AUDIO_MAX_FILES=$(config_or_default 'debug_audio_max_files' '100')
+KROKO_THREADS=$(config_or_default 'kroko_threads' '1')
+KROKO_HOTWORDS_SCORE=$(config_or_default 'kroko_hotwords_score' '1.5')
+SPEECHCATCHER_THREADS=$(config_or_default 'speechcatcher_threads' '0')
+SPEECHCATCHER_BEAM_SIZE=$(config_or_default 'speechcatcher_beam_size' '5')
 TTS_ENABLED=$(config_bool_or_default 'tts_enabled' 'false')
 # MUST default to pocket_tts -- see config.yaml's own comment on this option.
 TTS_ENGINE=$(config_or_default 'tts_engine' 'pocket_tts')
@@ -69,6 +79,10 @@ KOKORO_SPEED=$(config_or_default 'kokoro_speed' '1.0')
 KOKORO_THREADS=$(config_or_default 'kokoro_threads' '0')
 KOKORO_SENTENCE_PAUSE=$(config_or_default 'kokoro_sentence_pause' '0.25')
 KOKORO_CLAUSE_PAUSE=$(config_or_default 'kokoro_clause_pause' '0.1')
+SUPERTONIC_VOICE=$(config_or_default 'supertonic_voice' 'M1')
+SUPERTONIC_SPEED=$(config_or_default 'supertonic_speed' '1.0')
+SUPERTONIC_STEPS=$(config_or_default 'supertonic_steps' '8')
+SUPERTONIC_THREADS=$(config_or_default 'supertonic_threads' '1')
 
 # EXTRA_KEYTERMS is a free-text field; "null" is a legitimate (if unlikely)
 # keyterm-list entry only if a user literally typed it, but an *absent*
@@ -82,6 +96,7 @@ fi
 bashio::log.info "Starting HomeIntent Moonshine Voice"
 bashio::log.info "STT enabled: ${STT_ENABLED}"
 if bashio::var.true "${STT_ENABLED}"; then
+    bashio::log.info "STT engine: ${STT_ENGINE}"
     bashio::log.info "STT model: ${MODEL}"
     bashio::log.info "STT language: ${LANGUAGE}"
 fi
@@ -90,6 +105,8 @@ if bashio::var.true "${TTS_ENABLED}"; then
     bashio::log.info "TTS engine: ${TTS_ENGINE}"
     if [ "${TTS_ENGINE}" = "kokoro_onnx" ]; then
         bashio::log.info "TTS voice: ${KOKORO_VOICE}"
+    elif [ "${TTS_ENGINE}" = "supertonic_3" ]; then
+        bashio::log.info "TTS voice: ${SUPERTONIC_VOICE}"
     else
         bashio::log.info "TTS model: ${TTS_MODEL}"
         bashio::log.info "TTS voice: ${TTS_VOICE}"
@@ -100,6 +117,7 @@ bashio::log.info "Log Level: ${LOG_LEVEL}"
 # Build flags
 FLAGS=()
 
+FLAGS+=("--stt-engine" "${STT_ENGINE}")
 FLAGS+=("--model" "${MODEL}")
 FLAGS+=("--language" "${LANGUAGE}")
 FLAGS+=("--port" "10300")
@@ -109,6 +127,10 @@ FLAGS+=("--ha-vocabulary-refresh-minutes" "${HA_VOCABULARY_REFRESH_MINUTES}")
 FLAGS+=("--transcription-interval" "${TRANSCRIPTION_INTERVAL}")
 FLAGS+=("--vad-threshold" "${VAD_THRESHOLD}")
 FLAGS+=("--debug-audio-max-files" "${DEBUG_AUDIO_MAX_FILES}")
+FLAGS+=("--kroko-threads" "${KROKO_THREADS}")
+FLAGS+=("--kroko-hotwords-score" "${KROKO_HOTWORDS_SCORE}")
+FLAGS+=("--speechcatcher-threads" "${SPEECHCATCHER_THREADS}")
+FLAGS+=("--speechcatcher-beam-size" "${SPEECHCATCHER_BEAM_SIZE}")
 FLAGS+=("--tts-engine" "${TTS_ENGINE}")
 FLAGS+=("--tts-model" "${TTS_MODEL}")
 FLAGS+=("--tts-voice" "${TTS_VOICE}")
@@ -118,6 +140,10 @@ FLAGS+=("--kokoro-speed" "${KOKORO_SPEED}")
 FLAGS+=("--kokoro-threads" "${KOKORO_THREADS}")
 FLAGS+=("--kokoro-sentence-pause" "${KOKORO_SENTENCE_PAUSE}")
 FLAGS+=("--kokoro-clause-pause" "${KOKORO_CLAUSE_PAUSE}")
+FLAGS+=("--supertonic-voice" "${SUPERTONIC_VOICE}")
+FLAGS+=("--supertonic-speed" "${SUPERTONIC_SPEED}")
+FLAGS+=("--supertonic-steps" "${SUPERTONIC_STEPS}")
+FLAGS+=("--supertonic-threads" "${SUPERTONIC_THREADS}")
 
 if bashio::var.true "${STT_ENABLED}"; then
     FLAGS+=("--stt-enabled")

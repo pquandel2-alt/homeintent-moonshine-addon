@@ -30,8 +30,8 @@ from wyoming.tts import (
 
 from app.audio import float32_to_pcm_int16, pcm_int16_to_float32, validate_audio_format
 from app.debug_audio import DEFAULT_DEBUG_AUDIO_DIR, save_debug_audio
-from app.models import get_model_info
-from app.streaming import MoonshineStreamingSession
+from app.moonshine_engine import MoonshineSttEngine
+from app.stt_engine import SttEngine, SttSession
 from app.tts_engine import TtsSynthesisStats, TtsSynthesizer
 from app.tts_stream import TtsStreamPhase, TtsStreamState
 
@@ -40,10 +40,6 @@ _LOGGER = logging.getLogger(__name__)
 _ATTRIBUTION_PROGRAM = Attribution(
     name="HomeIntent Contributors",
     url="https://github.com/pquandel2-alt/homeintent-moonshine-addon",
-)
-_ATTRIBUTION_MODEL = Attribution(
-    name="Moonshine AI",
-    url="https://github.com/moonshine-ai/moonshine",
 )
 
 
@@ -116,7 +112,7 @@ class MoonshineAsrHandler(AsyncEventHandler):
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
-        transcriber: Transcriber | None,
+        transcriber: Transcriber | None = None,
         model_name: str = "",
         language: str = "de",
         log_transcripts: bool = False,
@@ -128,6 +124,7 @@ class MoonshineAsrHandler(AsyncEventHandler):
         tts_synthesizer: TtsSynthesizer | None = None,
         tts_model_name: str = "",
         tts_log_performance: bool = True,
+        stt_engine: SttEngine | None = None,
     ):
         """Initialize handler.
 
@@ -135,7 +132,21 @@ class MoonshineAsrHandler(AsyncEventHandler):
             reader: Wyoming protocol reader
             writer: Wyoming protocol writer
             transcriber: The single Transcriber loaded once at add-on
-                startup, or None if ``stt_enabled`` is false.
+                startup, or None if ``stt_enabled`` is false. Only used when
+                ``stt_engine`` is not given: it is wrapped internally into a
+                :class:`app.moonshine_engine.MoonshineSttEngine` so every
+                STT engine (Moonshine or Kroko) is driven through the same
+                :class:`app.stt_engine.SttEngine` interface below --
+                app/handler.py itself never branches on which engine is
+                active. Kept as its own constructor parameter (rather than
+                requiring every existing caller/test to build a
+                MoonshineSttEngine itself) purely for backwards
+                compatibility with call sites predating the SttEngine
+                abstraction.
+            stt_engine: The STT engine to use (Moonshine, Kroko, ...). Takes
+                priority over ``transcriber``/``model_name`` when given. One
+                of ``transcriber`` or ``stt_engine`` should be provided when
+                ``stt_enabled`` is true; both ``None`` means STT is disabled.
             model_name: STT model in use ("tiny" or "small").
             language: Language code ("de" for German)
             log_transcripts: If True, log the recognized text at INFO. If
@@ -163,9 +174,14 @@ class MoonshineAsrHandler(AsyncEventHandler):
                 synthesized text.
         """
         super().__init__(reader, writer)
-        self._transcriber = transcriber
         self._model_name = model_name
         self._language = language
+        if stt_engine is not None:
+            self._stt_engine: SttEngine | None = stt_engine
+        elif transcriber is not None:
+            self._stt_engine = MoonshineSttEngine(transcriber, model_name, language)
+        else:
+            self._stt_engine = None
         self._log_transcripts = log_transcripts
         self._log_performance = log_performance
         self._save_debug_audio_enabled = save_debug_audio_enabled
@@ -176,7 +192,7 @@ class MoonshineAsrHandler(AsyncEventHandler):
         self._tts_model_name = tts_model_name
         self._tts_log_performance = tts_log_performance
 
-        self._session: MoonshineStreamingSession | None = None
+        self._session: SttSession | None = None
         self._audio_rejected = False
         self._raw_audio_buffer: bytearray | None = None
 
@@ -243,22 +259,22 @@ class MoonshineAsrHandler(AsyncEventHandler):
         """Respond to service discovery request with whichever of ASR/TTS
         is actually enabled (transcriber/tts_synthesizer not None)."""
         asr_programs = []
-        if self._transcriber is not None:
-            model_info = get_model_info(self._model_name)
+        if self._stt_engine is not None:
+            engine = self._stt_engine
             asr_model = AsrModel(
-                name=model_info.get("name", "unknown"),
-                attribution=_ATTRIBUTION_MODEL,
+                name=engine.model_display_name or "unknown",
+                attribution=Attribution(name=engine.attribution_name, url=engine.attribution_url),
                 installed=True,
-                description=model_info.get("description", ""),
-                version=model_info.get("name", "0.1.0"),
+                description=engine.description,
+                version=engine.model_display_name or "0.1.0",
                 languages=[self._language],
             )
             asr_programs.append(
                 AsrProgram(
-                    name="homeintent-moonshine",
+                    name=engine.program_name,
                     attribution=_ATTRIBUTION_PROGRAM,
                     installed=True,
-                    description="HomeIntent Moonshine STT - German streaming ASR",
+                    description=engine.description,
                     version=None,
                     models=[asr_model],
                 )
@@ -315,7 +331,7 @@ class MoonshineAsrHandler(AsyncEventHandler):
 
     async def _handle_audio_start(self, event: Event) -> None:
         """Handle audio stream start."""
-        if self._transcriber is None:
+        if self._stt_engine is None:
             _LOGGER.warning("Received audio-start but STT is disabled (stt_enabled: false)")
             return
 
@@ -342,7 +358,7 @@ class MoonshineAsrHandler(AsyncEventHandler):
             )
             self._close_session()
 
-        self._session = MoonshineStreamingSession(self._transcriber, lock=self._moonshine_lock)
+        self._session = self._stt_engine.create_session(lock=self._moonshine_lock)
         self._raw_audio_buffer = bytearray() if self._save_debug_audio_enabled else None
         await self._session.start()
 

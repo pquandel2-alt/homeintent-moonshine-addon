@@ -132,7 +132,7 @@ jobs:
             -v "${GITHUB_WORKSPACE}/.github/ci/fake_supervisor.py:/fake_supervisor.py:ro" \
             -v "${GITHUB_WORKSPACE}/homeintent-moonshine-stt/config.yaml:/config.yaml:ro" \
             -e CI_MODEL=tiny \
-            -e CI_OMIT_OPTIONS="log_performance,use_ha_vocabulary,ha_vocabulary_refresh_minutes,transcription_interval,decode_incomplete_lines,save_debug_audio,debug_audio_max_files,stt_enabled,tts_enabled,tts_engine,tts_model,tts_voice,tts_log_performance,tts_warmup,tts_threads,kokoro_voice,kokoro_speed,kokoro_threads,kokoro_sentence_pause,kokoro_clause_pause" \
+            -e CI_OMIT_OPTIONS="log_performance,use_ha_vocabulary,ha_vocabulary_refresh_minutes,transcription_interval,decode_incomplete_lines,save_debug_audio,debug_audio_max_files,stt_enabled,stt_engine,kroko_threads,kroko_hotwords_score,speechcatcher_threads,speechcatcher_beam_size,tts_enabled,tts_engine,tts_model,tts_voice,tts_log_performance,tts_warmup,tts_threads,kokoro_voice,kokoro_speed,kokoro_threads,kokoro_sentence_pause,kokoro_clause_pause,supertonic_voice,supertonic_speed,supertonic_steps,supertonic_threads" \
             -e CI_NULL_OPTIONS="keyterm_boost,vad_threshold" \
             python:3.11-slim python3 /fake_supervisor.py
 
@@ -202,6 +202,7 @@ jobs:
           python-version: "3.11"
 
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
       - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
 
       - name: Transcribe the fixed audio fixture and check the result
@@ -234,6 +235,7 @@ jobs:
           python-version: "3.11"
 
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
       - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
 
       - name: Synthesize German text with Pocket TTS and check the audio
@@ -259,6 +261,7 @@ jobs:
         with:
           python-version: "3.11"
 
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
       - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
 
       - name: Synthesize German text with Kokoro ONNX and check the audio
@@ -268,6 +271,118 @@ jobs:
         run: |
           cd homeintent-moonshine-stt
           python3 -m pytest app/tests/test_e2e_kokoro_tts.py -v -m e2e -rs
+
+  e2e-kroko-stt-transcribe:
+    name: Real German Kroko STT E2E Wyoming round-trip
+    # Downloads the real sherpa-onnx Kroko German model on every run -- same
+    # gating as e2e-kokoro-tts-synthesize above, for the same reason.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
+      - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
+
+      - name: Transcribe real German audio with Kroko and check the result
+        env:
+          E2E_REQUIRE_ONLINE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
+          RUN_KROKO_E2E: "1"
+        run: |
+          cd homeintent-moonshine-stt
+          python3 -m pytest app/tests/test_e2e_kroko_stt.py -v -m e2e -rs
+
+  e2e-speechcatcher-stt-transcribe:
+    name: Real German Speechcatcher STT E2E Wyoming round-trip
+    # Downloads the real, multi-hundred-MB Speechcatcher model(s) on every
+    # run and needs the full torch/torchaudio/espnet_streaming_decoder/
+    # espnet_model_zoo/speechcatcher stack installed -- same gating as
+    # e2e-kokoro-tts-synthesize above, for the same reason (never on a
+    # normal push/PR).
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - run: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
+      - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
+      # Speechcatcher itself and its two git-only forks are not on PyPI --
+      # installed the same way, and pinned to the same exact commits, as
+      # the Dockerfile (see requirements-runtime.txt's own comment).
+      - run: |
+          pip install --no-deps \
+            "git+https://github.com/speechcatcher-asr/espnet_streaming_decoder.git@76752e2eb37b68e4466fa65bae3a662ef1043f4c" \
+            "git+https://github.com/speechcatcher-asr/espnet_model_zoo.git@e3f3c8f69794e3cacf0a88900f2c3d5f17360fae" \
+            "git+https://github.com/speechcatcher-asr/speechcatcher.git@1f647a43105b7167b6a47e7b2af2ef3c4ff53a2b"
+
+      - name: Transcribe real German audio with Speechcatcher and check the result
+        env:
+          E2E_REQUIRE_ONLINE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
+          RUN_SPEECHCATCHER_E2E: "1"
+        run: |
+          cd homeintent-moonshine-stt
+          python3 -m pytest app/tests/test_e2e_speechcatcher_stt.py -v -m e2e -rs
+
+  e2e-vosk-stt-transcribe:
+    name: Real German Vosk STT E2E Wyoming round-trip
+    # Downloads the real, small (~45MB) Vosk German model on every run --
+    # same gating as e2e-kokoro-tts-synthesize above, for the same reason.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
+      - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
+
+      - name: Transcribe real German audio with Vosk and check the result
+        env:
+          E2E_REQUIRE_ONLINE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
+          RUN_VOSK_E2E: "1"
+        run: |
+          cd homeintent-moonshine-stt
+          python3 -m pytest app/tests/test_e2e_vosk_stt.py -v -m e2e -rs
+
+  e2e-supertonic-tts-synthesize:
+    name: Real German Supertonic 3 TTS E2E Wyoming round-trip
+    # Downloads the real sherpa-onnx Supertonic 3 int8 model on every run --
+    # same gating as e2e-kokoro-tts-synthesize above, for the same reason.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
+      - run: pip install pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt
+
+      - name: Synthesize German text with Supertonic 3 and check the audio
+        env:
+          E2E_REQUIRE_ONLINE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
+          RUN_SUPERTONIC_E2E: "1"
+        run: |
+          cd homeintent-moonshine-stt
+          python3 -m pytest app/tests/test_e2e_supertonic_tts.py -v -m e2e -rs
 
   generate-stt-fixture:
     name: Regenerate STT test audio fixture (manual only, uploads artifact)
@@ -287,6 +402,7 @@ jobs:
         with:
           python-version: "3.11"
 
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
       - run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
           pip install scipy pytest pytest-asyncio -r homeintent-moonshine-stt/requirements-runtime.txt

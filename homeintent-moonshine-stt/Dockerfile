@@ -6,12 +6,22 @@ ARG PYTHON_VERSION=3.11
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Install system dependencies
+#
+# portaudio19-dev: needed to build the `pyaudio` wheel (no prebuilt wheels
+# exist for it on PyPI, verified). pyaudio is a transitive dependency of
+# the `speechcatcher` package (see requirements-runtime.txt) -- its own CLI
+# module imports pyaudio unconditionally for a live-microphone feature this
+# add-on's Wyoming-driven code path never uses, but the import must still
+# succeed. Only pulled in when stt_engine=speechcatcher_m/speechcatcher_l;
+# harmless (a few hundred KB) for every other configuration.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         python${PYTHON_VERSION} \
         python${PYTHON_VERSION}-venv \
         python${PYTHON_VERSION}-dev \
         build-essential \
+        portaudio19-dev \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
 # Create virtual environment
@@ -38,11 +48,27 @@ ENV PATH="/opt/venv/bin:$PATH"
 # it again.
 COPY requirements-runtime.txt /tmp/requirements-runtime.txt
 RUN pip install --no-cache-dir \
-    torch \
+    torch torchaudio \
     --index-url https://download.pytorch.org/whl/cpu \
     --extra-index-url https://pypi.org/simple \
     && pip install --no-cache-dir -r /tmp/requirements-runtime.txt \
     && rm /tmp/requirements-runtime.txt
+
+# Speechcatcher (stt_engine=speechcatcher_m/speechcatcher_l) and its own
+# two forked dependencies are not published on PyPI (verified) and are
+# installed straight from pinned git commits, with --no-deps: every one of
+# their own transitive dependencies is already pinned and installed above
+# (requirements-runtime.txt), so pip never has to resolve (or trust the
+# unpinned refs inside) speechcatcher's/espnet_model_zoo's own
+# requirements files at build time. Order matters: espnet_streaming_decoder
+# and espnet_model_zoo first (speechcatcher imports both at runtime),
+# speechcatcher itself last. Commits pinned to the exact revisions this
+# add-on was verified against (see app/speechcatcher_model.py's module
+# docstring for what was verified from each).
+RUN pip install --no-cache-dir --no-deps \
+    "git+https://github.com/speechcatcher-asr/espnet_streaming_decoder.git@76752e2eb37b68e4466fa65bae3a662ef1043f4c" \
+    "git+https://github.com/speechcatcher-asr/espnet_model_zoo.git@e3f3c8f69794e3cacf0a88900f2c3d5f17360fae" \
+    "git+https://github.com/speechcatcher-asr/speechcatcher.git@1f647a43105b7167b6a47e7b2af2ef3c4ff53a2b"
 
 # Copy application
 WORKDIR /app
@@ -69,6 +95,23 @@ COPY rootfs /
 ENV MOONSHINE_VOICE_CACHE=/data/models
 ENV HF_HOME=/data/models/pocket-tts
 ENV KOKORO_ONNX_CACHE=/data/models/kokoro-onnx
+# KROKO_CACHE: app/kroko_model.py's own model cache, only ever populated
+# when stt_engine=kroko. SUPERTONIC_CACHE: app/supertonic_tts.py's own
+# model cache, only ever populated when tts_enabled=true and
+# tts_engine=supertonic_3. Both are separate subdirectories under /data/
+# models for the same reasons as Pocket TTS/Kokoro above (independent
+# inspection/clearing; already covered by config.yaml's
+# backup_exclude: ["models/*"]).
+ENV KROKO_CACHE=/data/models/kroko
+ENV SUPERTONIC_CACHE=/data/models/supertonic
+# SPEECHCATCHER_CACHE: app/speechcatcher_model.py's own model cache, only
+# ever populated when stt_engine is speechcatcher_m or speechcatcher_l.
+# Same independent-subdirectory reasoning as the other engines above.
+ENV SPEECHCATCHER_CACHE=/data/models/speechcatcher
+# VOSK_CACHE: app/vosk_model.py's own model cache, only ever populated
+# when stt_engine=vosk_german. Same independent-subdirectory reasoning as
+# the other engines above.
+ENV VOSK_CACHE=/data/models/vosk
 
 # Health check: real Wyoming describe round-trip, not a raw-byte grep (see
 # app/healthcheck.py). start-period raised from 60s: a first-run Pocket TTS

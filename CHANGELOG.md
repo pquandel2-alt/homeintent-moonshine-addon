@@ -1,5 +1,78 @@
 # Changelog
 
+## [0.6.0] - 2026-09-19
+
+Adds a fifth and final user-selectable STT engine, **Vosk German**
+(`vosk_german`), the lightest-weight, lowest-CPU/RAM option this add-on
+offers -- a Kaldi-based recognizer (via the `vosk` PyPI package) driven
+in-process through `vosk.KaldiRecognizer.AcceptWaveform()` for real,
+incremental streaming. Uses the current, officially recommended small
+German model (`vosk-model-small-de-0.15`, ~45MB, Apache 2.0), downloaded
+on demand into `/data/models/vosk/` only when selected. Vosk's own
+grammar/context-biasing API was investigated and deliberately NOT wired
+up as HA-vocabulary biasing: it is a hard closed-set recognition
+restriction, not a soft bias, and would break free-form recognition of
+anything outside the given phrase list -- honestly reported as
+`supports_hotwords=False` via the existing `SttCapabilities` abstraction,
+matching Speechcatcher's own precedent. This completes the originally
+planned 5 STT x 3 TTS engine matrix; no further STT engines are currently
+planned.
+
+Also adds `app/stt_benchmark.py`, a cross-engine STT benchmark CLI driven
+entirely through the shared `SttEngine` abstraction (`--engine
+moonshine|kroko|speechcatcher_m|speechcatcher_l|vosk_german`), and extends
+`app/tts_benchmark.py` (previously Pocket TTS/Kokoro ONNX only) to also
+cover **Supertonic 3** -- an explicitly-reported gap from an earlier
+phase. Both tools are local, manual, on-your-own-hardware benchmarking
+tools (like the pre-existing `app/benchmark.py`), not something CI runs or
+a source of any numbers quoted in README/DOCS.
+
+Moonshine, Kroko, Speechcatcher M/L, Pocket TTS, Kokoro ONNX, and
+Supertonic 3 are unchanged; the defaults (`stt_engine: moonshine`,
+`tts_engine: pocket_tts`) are unchanged for full backward compatibility.
+
+See `homeintent-moonshine-stt/CHANGELOG.md` for full details.
+
+## [0.5.0] - 2026-09-19
+
+Adds two more user-selectable STT engines, **Speechcatcher M** and
+**Speechcatcher L** (`speechcatcher_m`/`speechcatcher_l`), a streaming
+Transformer ASR toolbox driven in-process via its own `Speech2TextStreaming`
+object (real, block-granular incremental streaming decode -- not
+`speechcatcher_server`'s websocket layer, which is itself only a thin
+wrapper around that same object). Uses Speechcatcher's own current, stable
+ESPnet-family decoder (`espnet_streaming_decoder`, a lighter, from-scratch
+extraction of ESPnet's streaming code, not the full `espnet` package); its
+newer "native" decoder was deliberately NOT used since upstream's own
+README still labels it experimental. Speechcatcher has no hotword/HA-
+vocabulary mechanism -- this is honestly reported via the `SttCapabilities`
+abstraction, not faked. Models are downloaded on demand, only when
+explicitly selected, into `/data/models/speechcatcher/`. Moonshine, Kroko,
+Pocket TTS, Kokoro ONNX, and Supertonic 3 are unchanged; the default
+(`stt_engine: moonshine`) is unchanged for full backward compatibility.
+
+Speechcatcher and its own two git-only forked dependencies
+(`espnet_streaming_decoder`, `espnet_model_zoo`) are not published on PyPI
+and pull in a meaningfully larger dependency set than Kroko's single
+`sherpa-onnx` wheel (Torch/torchaudio, librosa, numba, scikit-learn, h5py,
+kaldiio, and others) -- see `homeintent-moonshine-stt/CHANGELOG.md` for the
+full dependency/build-time breakdown.
+
+See `homeintent-moonshine-stt/CHANGELOG.md` for full details.
+
+## [0.4.0] - 2026-09-18
+
+Adds a second, user-selectable STT engine (**Kroko**, via sherpa-onnx,
+real streaming, German, Apache-2.0 model) and a third TTS engine
+(**Supertonic 3**, via sherpa-onnx, real callback streaming, 10 voices,
+MIT-licensed model), both run in-process behind a new generic
+`SttEngine`/`SttSession` abstraction. Moonshine, Pocket TTS, and Kokoro
+ONNX are unchanged; defaults (`stt_engine: moonshine`, `tts_engine:
+pocket_tts`) are unchanged for full backward compatibility. New models are
+downloaded on demand only when explicitly selected.
+
+See `homeintent-moonshine-stt/CHANGELOG.md` for full details.
+
 ## [0.3.0] - 2026-09-18
 
 Adds Kokoro German ONNX as a second, user-selectable local TTS engine

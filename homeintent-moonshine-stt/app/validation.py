@@ -44,7 +44,35 @@ KOKORO_SENTENCE_PAUSE_MAX = 2.0
 KOKORO_CLAUSE_PAUSE_MIN = 0.0
 KOKORO_CLAUSE_PAUSE_MAX = 2.0
 
-TTS_ENGINES = ("pocket_tts", "kokoro_onnx")
+TTS_ENGINES = ("pocket_tts", "kokoro_onnx", "supertonic_3")
+
+STT_ENGINES = ("moonshine", "kroko", "speechcatcher_m", "speechcatcher_l", "vosk_german")
+
+KROKO_THREADS_MIN = 1  # sherpa-onnx's own num_threads has no "0 = auto" mode
+KROKO_THREADS_MAX = 64
+
+# Speechcatcher runs on Torch (like Pocket TTS), so 0 = auto follows the
+# same convention as TTS_THREADS_MIN/MAX above, not Kroko's sherpa-onnx
+# convention (which has no "0 = auto" mode).
+SPEECHCATCHER_THREADS_MIN = 0
+SPEECHCATCHER_THREADS_MAX = 64
+
+# Our own defensive UI bounds -- speechcatcher's own --beamsize CLI default
+# is 5 (verified from source); no documented upstream hard limit.
+SPEECHCATCHER_BEAM_SIZE_MIN = 1
+SPEECHCATCHER_BEAM_SIZE_MAX = 30
+
+SUPERTONIC_SPEED_MIN = 0.25
+SUPERTONIC_SPEED_MAX = 3.0
+
+# Bounds are our own defensive UI bounds around Supertonic's own documented
+# default (8) and higher-quality example (10) -- see
+# app/supertonic_tts.py's module docstring; not an upstream hard limit.
+SUPERTONIC_STEPS_MIN = 2
+SUPERTONIC_STEPS_MAX = 32
+
+SUPERTONIC_THREADS_MIN = 1
+SUPERTONIC_THREADS_MAX = 64
 
 
 def validate_transcription_interval(value: float) -> float:
@@ -138,5 +166,65 @@ def validate_kokoro_clause_pause(value: float) -> float:
         raise ValueError(
             f"kokoro_clause_pause must be between {KOKORO_CLAUSE_PAUSE_MIN} and "
             f"{KOKORO_CLAUSE_PAUSE_MAX}, got {value}"
+        )
+    return value
+
+
+def validate_stt_engine(value: str) -> str:
+    if value not in STT_ENGINES:
+        raise ValueError(f"stt_engine must be one of {STT_ENGINES}, got {value!r}")
+    return value
+
+
+def validate_kroko_threads(value: int) -> int:
+    if not (KROKO_THREADS_MIN <= value <= KROKO_THREADS_MAX):
+        raise ValueError(
+            f"kroko_threads must be between {KROKO_THREADS_MIN} and {KROKO_THREADS_MAX}, "
+            f"got {value}"
+        )
+    return value
+
+
+def validate_supertonic_speed(value: float) -> float:
+    if not (SUPERTONIC_SPEED_MIN <= value <= SUPERTONIC_SPEED_MAX):
+        raise ValueError(
+            f"supertonic_speed must be between {SUPERTONIC_SPEED_MIN} and "
+            f"{SUPERTONIC_SPEED_MAX}, got {value}"
+        )
+    return value
+
+
+def validate_supertonic_steps(value: int) -> int:
+    if not (SUPERTONIC_STEPS_MIN <= value <= SUPERTONIC_STEPS_MAX):
+        raise ValueError(
+            f"supertonic_steps must be between {SUPERTONIC_STEPS_MIN} and "
+            f"{SUPERTONIC_STEPS_MAX}, got {value}"
+        )
+    return value
+
+
+def validate_supertonic_threads(value: int) -> int:
+    if not (SUPERTONIC_THREADS_MIN <= value <= SUPERTONIC_THREADS_MAX):
+        raise ValueError(
+            f"supertonic_threads must be between {SUPERTONIC_THREADS_MIN} and "
+            f"{SUPERTONIC_THREADS_MAX}, got {value}"
+        )
+    return value
+
+
+def validate_speechcatcher_threads(value: int) -> int:
+    if not (SPEECHCATCHER_THREADS_MIN <= value <= SPEECHCATCHER_THREADS_MAX):
+        raise ValueError(
+            f"speechcatcher_threads must be between {SPEECHCATCHER_THREADS_MIN} and "
+            f"{SPEECHCATCHER_THREADS_MAX}, got {value}"
+        )
+    return value
+
+
+def validate_speechcatcher_beam_size(value: int) -> int:
+    if not (SPEECHCATCHER_BEAM_SIZE_MIN <= value <= SPEECHCATCHER_BEAM_SIZE_MAX):
+        raise ValueError(
+            f"speechcatcher_beam_size must be between {SPEECHCATCHER_BEAM_SIZE_MIN} and "
+            f"{SPEECHCATCHER_BEAM_SIZE_MAX}, got {value}"
         )
     return value

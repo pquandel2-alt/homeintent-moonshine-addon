@@ -1,0 +1,152 @@
+configuration:
+  stt_enabled:
+    name: Enable speech-to-text
+    description: Turns speech recognition on or off. The engine used is chosen below with "STT engine".
+  stt_engine:
+    name: STT engine
+    description: >-
+      Which speech-to-text engine to run. "moonshine" (default) is the original Moonshine
+      engine this add-on has always shipped -- upgrading keeps using it automatically. "kroko"
+      is a newer streaming German engine (Banafo/Kroko via sherpa-onnx); its model is
+      downloaded the first time you select it. "speechcatcher_m" and "speechcatcher_l" are the
+      medium and large streaming Transformer models from the Speechcatcher project; both
+      download their model the first time you select them and, unlike moonshine/kroko, do not
+      support keyterm/Home Assistant vocabulary biasing. "vosk_german" is an extremely
+      lightweight, low-resource engine (Vosk/AlphaCephei, ~45MB model) offering the lowest
+      CPU/RAM footprint of any engine here; its model downloads the first time you select it,
+      and it also does not support keyterm/Home Assistant vocabulary biasing.
+  model:
+    name: Moonshine model
+    description: >-
+      Only relevant when STT engine is "moonshine". "small" is more accurate; "tiny" is
+      faster and uses less CPU/RAM.
+  language:
+    name: Language
+    description: Speech recognition/synthesis language. Only German ("de") is currently supported.
+  log_level:
+    name: Log level
+    description: How much detail to write to the add-on log. "INFO" is recommended for normal use.
+  log_transcripts:
+    name: Log recognized text
+    description: >-
+      When on, the actual recognized sentences are written to the log at INFO level. Off by
+      default since recognized speech can be privacy-sensitive.
+  log_performance:
+    name: Log STT performance
+    description: Logs a compact timing/real-time-factor line for each recognized utterance.
+  extra_keyterms:
+    name: Extra keyterms
+    description: >-
+      Comma-separated list of extra words/phrases to bias recognition towards (e.g. device or
+      room names not already known from Home Assistant).
+  keyterm_boost:
+    name: Keyterm boost strength
+    description: >-
+      Only relevant for STT engine "moonshine". How strongly the keyterms above and the Home
+      Assistant vocabulary are favored during recognition.
+  use_ha_vocabulary:
+    name: Use Home Assistant vocabulary
+    description: >-
+      Reads area, device, and entity names from Home Assistant (read-only) and adds them as
+      keyterms, so your own room/device names are recognized more reliably.
+  ha_vocabulary_refresh_minutes:
+    name: HA vocabulary refresh interval (minutes)
+    description: How often the Home Assistant vocabulary above is re-read. Set to 0 to disable periodic refresh.
+  transcription_interval:
+    name: Transcription interval (seconds)
+    description: >-
+      Only relevant for STT engine "moonshine". How often the streaming recognizer re-checks
+      the audio while you are speaking. Advanced setting; the default is recommended.
+  vad_threshold:
+    name: Voice activity detection threshold
+    description: >-
+      Only relevant for STT engine "moonshine". How sensitive silence/speech detection is.
+      Advanced setting; the default is recommended.
+  decode_incomplete_lines:
+    name: Decode incomplete lines
+    description: >-
+      Only relevant for STT engine "moonshine". Advanced setting; the default is recommended.
+  save_debug_audio:
+    name: Save debug audio
+    description: >-
+      Saves a copy of received audio (and its transcript) to disk for troubleshooting. Off by
+      default for privacy; only enable temporarily while diagnosing a problem.
+  debug_audio_max_files:
+    name: Debug audio file limit
+    description: Only relevant when "Save debug audio" is on. Oldest recordings beyond this count are deleted automatically.
+  kroko_threads:
+    name: Kroko CPU threads
+    description: Only relevant when STT engine is "kroko". Number of CPU threads sherpa-onnx uses for recognition.
+  kroko_hotwords_score:
+    name: Kroko keyterm boost strength
+    description: >-
+      Only relevant when STT engine is "kroko". How strongly the keyterms/Home Assistant
+      vocabulary above are favored during recognition (sherpa-onnx's own hotwords scoring).
+  speechcatcher_threads:
+    name: Speechcatcher CPU threads
+    description: >-
+      Only relevant when STT engine is "speechcatcher_m" or "speechcatcher_l". 0 leaves
+      PyTorch's own default untouched.
+  speechcatcher_beam_size:
+    name: Speechcatcher beam size
+    description: >-
+      Only relevant when STT engine is "speechcatcher_m" or "speechcatcher_l". Beam search
+      width for the streaming decoder; higher can be more accurate but slower. 5 is
+      Speechcatcher's own default.
+  tts_enabled:
+    name: Enable text-to-speech
+    description: Turns speech synthesis (talk-back) on or off. Off by default so upgrading never suddenly downloads a large voice model.
+  tts_engine:
+    name: TTS engine
+    description: >-
+      Which text-to-speech engine to run. "pocket_tts" (default) is the original Kyutai
+      Pocket TTS engine -- upgrading keeps using it automatically. "kokoro_onnx" is the German
+      "Martin" voice. "supertonic_3" is Supertone's multilingual Supertonic 3 engine with 10
+      selectable voices.
+  tts_model:
+    name: Pocket TTS voice model
+    description: Only relevant when TTS engine is "pocket_tts".
+  tts_voice:
+    name: Pocket TTS voice
+    description: Only relevant when TTS engine is "pocket_tts". Name of the Pocket TTS voice to speak with.
+  tts_log_performance:
+    name: Log TTS performance
+    description: Logs a compact timing/real-time-factor line for each synthesized reply.
+  tts_warmup:
+    name: Warm up TTS at startup
+    description: Runs one throwaway synthesis right after startup so the very first real reply is not unusually slow.
+  tts_threads:
+    name: Pocket TTS CPU threads
+    description: Only relevant when TTS engine is "pocket_tts". 0 leaves PyTorch's own default untouched.
+  kokoro_voice:
+    name: Kokoro voice
+    description: Only relevant when TTS engine is "kokoro_onnx". Currently only "martin" (German) is available.
+  kokoro_speed:
+    name: Kokoro speech speed
+    description: Only relevant when TTS engine is "kokoro_onnx". 1.0 is normal speed; higher is faster.
+  kokoro_threads:
+    name: Kokoro CPU threads
+    description: Only relevant when TTS engine is "kokoro_onnx". 0 leaves ONNX Runtime's own default untouched.
+  kokoro_sentence_pause:
+    name: Kokoro pause after sentence (seconds)
+    description: Only relevant when TTS engine is "kokoro_onnx".
+  kokoro_clause_pause:
+    name: Kokoro pause after clause (seconds)
+    description: Only relevant when TTS engine is "kokoro_onnx".
+  supertonic_voice:
+    name: Supertonic voice
+    description: >-
+      Only relevant when TTS engine is "supertonic_3". One of the 10 built-in voices: M1-M5
+      (male) or F1-F5 (female). Defaults to "M1".
+  supertonic_speed:
+    name: Supertonic speech speed
+    description: Only relevant when TTS engine is "supertonic_3". 1.0 is normal speed; higher is faster.
+  supertonic_steps:
+    name: Supertonic quality steps
+    description: >-
+      Only relevant when TTS engine is "supertonic_3". Number of denoising steps. 8 (default)
+      is Supertonic's own documented balanced setting; 10 is its documented higher-quality,
+      slower alternative. Higher values are slower but not officially documented.
+  supertonic_threads:
+    name: Supertonic CPU threads
+    description: Only relevant when TTS engine is "supertonic_3". Number of CPU threads sherpa-onnx uses for synthesis.

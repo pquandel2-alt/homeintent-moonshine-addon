@@ -28,12 +28,51 @@ over one Wyoming service.
 
 ### STT
 
-- **stt_enabled** (default `true`): enable Moonshine speech-to-text.
+Five STT engines are available, selected via **stt_engine** (this is the
+final, complete STT lineup this add-on plans to ship):
+
+| Engine | Value | Streaming | Hotwords/HA vocabulary |
+|--------|-------|-----------|--------------------------|
+| Moonshine (default) | `moonshine` | yes | yes |
+| Kroko | `kroko` | yes | yes (sherpa-onnx hotwords) |
+| Speechcatcher M | `speechcatcher_m` | yes, block-granular | no |
+| Speechcatcher L | `speechcatcher_l` | yes, block-granular | no |
+| Vosk German | `vosk_german` | yes (`AcceptWaveform`) | no (see below) |
+
+- **stt_enabled** (default `true`): enable speech-to-text.
+- **stt_engine** (default `moonshine`): `moonshine`, `kroko`, `speechcatcher_m`,
+  `speechcatcher_l`, or `vosk_german`. **Must stay `moonshine` on upgrade**
+  unless you explicitly opt in.
 - **model**: `tiny` (34M, faster, ~12% WER) or `small` (123M, ~7.5% WER, recommended).
+  Only relevant for `stt_engine: moonshine`.
 - **language**: `de` (German only).
 - **log_level**: `DEBUG`/`INFO`/`WARNING`/`ERROR`.
+- **kroko_threads** (default `1`), **kroko_hotwords_score** (default `1.5`):
+  sherpa-onnx tuning for the Kroko engine, ignored unless `stt_engine: kroko`.
+- **speechcatcher_threads** (default `0` = PyTorch's own default),
+  **speechcatcher_beam_size** (default `5`): tuning for Speechcatcher, ignored
+  unless `stt_engine` is `speechcatcher_m`/`speechcatcher_l`. Speechcatcher has
+  no hotword/HA-vocabulary mechanism -- `extra_keyterms`/HA vocabulary are
+  silently ignored (logged once at startup) when it is selected.
+- **vosk_german** has no tuning options of its own -- it is deliberately
+  kept as simple as possible, matching its whole purpose as the lightest-
+  weight, lowest-CPU/RAM STT option this add-on offers (~45MB model). Like
+  Speechcatcher, it has no hotword/HA-vocabulary mechanism suitable for
+  this add-on's use: Vosk's own grammar API is a hard closed-set
+  restriction on recognition, not a soft bias, so wiring it in would break
+  free-form recognition of anything outside the given phrase list --
+  `extra_keyterms`/HA vocabulary are silently ignored (logged once at
+  startup) when it is selected.
 
 ### TTS
+
+Three TTS engines are available, selected via **tts_engine**:
+
+| Engine | Value | Voices | Streaming |
+|--------|-------|--------|-----------|
+| Pocket TTS (default) | `pocket_tts` | 1 (`juergen`) | yes |
+| Kokoro ONNX | `kokoro_onnx` | 1 (`martin`) | yes |
+| Supertonic 3 | `supertonic_3` | 10 (`M1`-`M5`, `F1`-`F5`) | yes (native callback, via sherpa-onnx) |
 
 - **tts_enabled** (default `false`): enable text-to-speech. Off by default on
   upgrade so an existing STT-only install doesn't suddenly download an extra runtime
@@ -60,6 +99,13 @@ over one Wyoming service.
 - **kokoro_sentence_pause** / **kokoro_clause_pause** (defaults `0.25`/`0.1`
   seconds): Kokoro's own real upstream defaults for the pause inserted after a
   sentence/clause.
+- **supertonic_voice** (default `M1`): one of 10 built-in voices, `M1`-`M5`
+  (male) or `F1`-`F5` (female); a numeric sid `0`-`9` also works. Ignored
+  unless `tts_engine: supertonic_3`.
+- **supertonic_speed** (default `1.0`, range `0.25`-`3.0`).
+- **supertonic_steps** (default `8`): denoising steps; `8` is Supertonic's
+  own documented default, `10` its documented higher-quality alternative.
+- **supertonic_threads** (default `1`): sherpa-onnx CPU threads.
 - **tts_warmup** (default `true`): runs one discarded synthesis at startup so the
   first real request isn't slower than later ones. Pure performance optimization
   (a failure here is logged but never fails startup). Applies to whichever engine
@@ -238,3 +284,13 @@ This add-on's code, and Pocket TTS's own code, are licensed under the MIT Licens
   README) — the exact Hugging Face license field could not be verified during this
   add-on's development (huggingface.co was unreachable from the development
   environment); review it yourself before commercial use.
+- Kroko German STT model weights: Apache License 2.0 (Banafo AI's
+  Kroko-ASR, via sherpa-onnx).
+- Speechcatcher's own code (`speechcatcher_m`/`speechcatcher_l`): MIT License.
+  The model checkpoints' own Hugging Face Hub license field could not be
+  verified during this add-on's development (huggingface.co was unreachable
+  from the development environment); review it yourself before commercial use.
+- Supertonic 3 TTS model weights: MIT License (Supertone Inc.).
+- `sherpa-onnx` itself (runtime for Kroko + Supertonic 3): Apache-2.0.
+- Vosk German STT model weights (`vosk_german`): Apache License 2.0
+  (AlphaCephei's `vosk-model-small-de-0.15`).

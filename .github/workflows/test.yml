@@ -11,5 +11,6 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
       - run: pip install pytest pytest-asyncio pyyaml -r homeintent-moonshine-stt/requirements-runtime.txt
       - run: pytest homeintent-moonshine-stt/app/tests/ -v
