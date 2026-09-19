@@ -12,6 +12,10 @@ configuration:
       "speechcatcher_m" und "speechcatcher_l" sind das mittlere bzw. große streamingfähige
       Transformer-Modell des Speechcatcher-Projekts; beide laden ihr Modell beim ersten
       Auswählen herunter und unterstützen anders als moonshine/kroko keine
+      Schlüsselbegriff-/Home-Assistant-Vokabular-Gewichtung. "vosk_german" ist eine extrem
+      ressourcenschonende Engine (Vosk/AlphaCephei, ca. 45MB Modell) mit dem geringsten
+      CPU-/RAM-Bedarf aller hier angebotenen Engines; ihr Modell wird beim ersten Auswählen
+      heruntergeladen, und auch sie unterstützt keine
       Schlüsselbegriff-/Home-Assistant-Vokabular-Gewichtung.
   model:
     name: Moonshine-Modell

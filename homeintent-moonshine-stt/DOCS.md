@@ -28,7 +28,8 @@ over one Wyoming service.
 
 ### STT
 
-Four STT engines are available, selected via **stt_engine**:
+Five STT engines are available, selected via **stt_engine** (this is the
+final, complete STT lineup this add-on plans to ship):
 
 | Engine | Value | Streaming | Hotwords/HA vocabulary |
 |--------|-------|-----------|--------------------------|
@@ -36,12 +37,12 @@ Four STT engines are available, selected via **stt_engine**:
 | Kroko | `kroko` | yes | yes (sherpa-onnx hotwords) |
 | Speechcatcher M | `speechcatcher_m` | yes, block-granular | no |
 | Speechcatcher L | `speechcatcher_l` | yes, block-granular | no |
-
-Vosk is planned but not yet available.
+| Vosk German | `vosk_german` | yes (`AcceptWaveform`) | no (see below) |
 
 - **stt_enabled** (default `true`): enable speech-to-text.
 - **stt_engine** (default `moonshine`): `moonshine`, `kroko`, `speechcatcher_m`,
-  or `speechcatcher_l`. **Must stay `moonshine` on upgrade** unless you explicitly opt in.
+  `speechcatcher_l`, or `vosk_german`. **Must stay `moonshine` on upgrade**
+  unless you explicitly opt in.
 - **model**: `tiny` (34M, faster, ~12% WER) or `small` (123M, ~7.5% WER, recommended).
   Only relevant for `stt_engine: moonshine`.
 - **language**: `de` (German only).
@@ -53,6 +54,15 @@ Vosk is planned but not yet available.
   unless `stt_engine` is `speechcatcher_m`/`speechcatcher_l`. Speechcatcher has
   no hotword/HA-vocabulary mechanism -- `extra_keyterms`/HA vocabulary are
   silently ignored (logged once at startup) when it is selected.
+- **vosk_german** has no tuning options of its own -- it is deliberately
+  kept as simple as possible, matching its whole purpose as the lightest-
+  weight, lowest-CPU/RAM STT option this add-on offers (~45MB model). Like
+  Speechcatcher, it has no hotword/HA-vocabulary mechanism suitable for
+  this add-on's use: Vosk's own grammar API is a hard closed-set
+  restriction on recognition, not a soft bias, so wiring it in would break
+  free-form recognition of anything outside the given phrase list --
+  `extra_keyterms`/HA vocabulary are silently ignored (logged once at
+  startup) when it is selected.
 
 ### TTS
 
@@ -282,3 +292,5 @@ This add-on's code, and Pocket TTS's own code, are licensed under the MIT Licens
   from the development environment); review it yourself before commercial use.
 - Supertonic 3 TTS model weights: MIT License (Supertone Inc.).
 - `sherpa-onnx` itself (runtime for Kroko + Supertonic 3): Apache-2.0.
+- Vosk German STT model weights (`vosk_german`): Apache License 2.0
+  (AlphaCephei's `vosk-model-small-de-0.15`).

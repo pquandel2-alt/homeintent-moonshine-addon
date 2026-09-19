@@ -11,7 +11,10 @@ configuration:
       downloaded the first time you select it. "speechcatcher_m" and "speechcatcher_l" are the
       medium and large streaming Transformer models from the Speechcatcher project; both
       download their model the first time you select them and, unlike moonshine/kroko, do not
-      support keyterm/Home Assistant vocabulary biasing.
+      support keyterm/Home Assistant vocabulary biasing. "vosk_german" is an extremely
+      lightweight, low-resource engine (Vosk/AlphaCephei, ~45MB model) offering the lowest
+      CPU/RAM footprint of any engine here; its model downloads the first time you select it,
+      and it also does not support keyterm/Home Assistant vocabulary biasing.
   model:
     name: Moonshine model
     description: >-

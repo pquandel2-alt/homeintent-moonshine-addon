@@ -108,6 +108,10 @@ ENV SUPERTONIC_CACHE=/data/models/supertonic
 # ever populated when stt_engine is speechcatcher_m or speechcatcher_l.
 # Same independent-subdirectory reasoning as the other engines above.
 ENV SPEECHCATCHER_CACHE=/data/models/speechcatcher
+# VOSK_CACHE: app/vosk_model.py's own model cache, only ever populated
+# when stt_engine=vosk_german. Same independent-subdirectory reasoning as
+# the other engines above.
+ENV VOSK_CACHE=/data/models/vosk
 
 # Health check: real Wyoming describe round-trip, not a raw-byte grep (see
 # app/healthcheck.py). start-period raised from 60s: a first-run Pocket TTS

@@ -11,6 +11,7 @@ export KOKORO_ONNX_CACHE=/data/models/kokoro-onnx
 export KROKO_CACHE=/data/models/kroko
 export SUPERTONIC_CACHE=/data/models/supertonic
 export SPEECHCATCHER_CACHE=/data/models/speechcatcher
+export VOSK_CACHE=/data/models/vosk
 
 # Read a config option, falling back to a hard-coded default (matching
 # config.yaml's own default) whenever the Supervisor value is absent,

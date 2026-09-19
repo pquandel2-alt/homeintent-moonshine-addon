@@ -3,9 +3,9 @@ name: HomeIntent Moonshine Voice
 # Slug intentionally left as "homeintent-moonshine-stt" (its v0.1.x value) so
 # existing installations upgrade in place rather than appearing as a brand
 # new add-on -- see ABSCHLUSSBERICHT_V0.2.0.md's "Add-on name / slug" section.
-version: 0.5.0
+version: 0.6.0
 slug: homeintent-moonshine-stt
-description: Local German speech-to-text (Moonshine, Kroko, or Speechcatcher) and text-to-speech (Kyutai Pocket TTS, Kokoro ONNX, or Supertonic 3) over Wyoming
+description: Local German speech-to-text (Moonshine, Kroko, Speechcatcher, or Vosk) and text-to-speech (Kyutai Pocket TTS, Kokoro ONNX, or Supertonic 3) over Wyoming
 url: https://github.com/pquandel2-alt/homeintent-moonshine-addon
 arch:
   - amd64
@@ -54,6 +54,10 @@ options:
   # kroko_hotwords_score here.
   speechcatcher_threads: 0
   speechcatcher_beam_size: 5
+  # Vosk (stt_engine=vosk_german) has no tunable options of its own -- it
+  # is deliberately kept as simple as possible, matching its whole purpose
+  # as the lightest-weight/lowest-resource STT option (see
+  # app/vosk_engine.py's module docstring).
   # TTS defaults to OFF on upgrade: an existing pure-STT installation must
   # not suddenly download an extra PyTorch + Pocket TTS model (several
   # hundred MB) and grow its startup time. New installations are documented
@@ -84,7 +88,7 @@ options:
   supertonic_threads: 1
 schema:
   stt_enabled: bool
-  stt_engine: list(moonshine|kroko|speechcatcher_m|speechcatcher_l)
+  stt_engine: list(moonshine|kroko|speechcatcher_m|speechcatcher_l|vosk_german)
   model: list(tiny|small)
   language: list(de)
   log_level: list(DEBUG|INFO|WARNING|ERROR)

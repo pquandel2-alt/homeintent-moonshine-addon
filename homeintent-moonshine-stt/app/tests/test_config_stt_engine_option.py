@@ -23,7 +23,10 @@ def _load_config_yaml() -> dict[str, Any]:
 def test_stt_engine_default_is_moonshine_in_config_yaml() -> None:
     config = _load_config_yaml()
     assert config["options"]["stt_engine"] == "moonshine"
-    assert config["schema"]["stt_engine"] == "list(moonshine|kroko|speechcatcher_m|speechcatcher_l)"
+    assert (
+        config["schema"]["stt_engine"]
+        == "list(moonshine|kroko|speechcatcher_m|speechcatcher_l|vosk_german)"
+    )
 
 
 def test_tts_engine_schema_includes_supertonic_3() -> None:
@@ -75,7 +78,9 @@ def test_validate_args_rejects_unknown_stt_engine() -> None:
     assert _validate_args(args) is False
 
 
-@pytest.mark.parametrize("engine", ["moonshine", "kroko", "speechcatcher_m", "speechcatcher_l"])
+@pytest.mark.parametrize(
+    "engine", ["moonshine", "kroko", "speechcatcher_m", "speechcatcher_l", "vosk_german"]
+)
 def test_validate_args_accepts_known_stt_engines(engine: str) -> None:
     parser = build_arg_parser()
     args = parser.parse_args(["--stt-engine", engine])

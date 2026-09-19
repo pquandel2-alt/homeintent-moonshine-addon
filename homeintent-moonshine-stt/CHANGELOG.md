@@ -1,5 +1,127 @@
 # Changelog - HomeIntent Moonshine Voice Add-on
 
+## [0.6.0] - 2026-09-19
+
+Adds a fifth and final user-selectable STT engine, **Vosk German**
+(`vosk_german`) -- the lightest-weight, lowest-CPU/RAM STT option this
+add-on offers -- completing the planned 5 STT x 3 TTS engine matrix. Also
+adds `app/stt_benchmark.py` (a cross-engine STT benchmark CLI) and extends
+`app/tts_benchmark.py` to cover Supertonic 3. Moonshine, Kroko,
+Speechcatcher M/L, Pocket TTS, Kokoro ONNX, and Supertonic 3 are unchanged
+and remain their previous defaults; upgrading requires no action.
+
+### Added
+- **New STT engine: Vosk German** (`app/vosk_engine.py`,
+  `app/vosk_model.py`), a Kaldi-based recognizer via the
+  [`vosk`](https://alphacephei.com/vosk/) PyPI package (Apache 2.0),
+  driven in-process through `vosk.KaldiRecognizer` -- no subprocess, no
+  separate container.
+  - **Streaming**: real, sample-incremental streaming -- every Wyoming
+    audio chunk is fed straight into `AcceptWaveform()` as it arrives
+    (verified directly from the installed wheel's own
+    `vosk/__init__.py` source), not buffered and decoded once at the end.
+    `FinalResult()` is called at `finalize()`.
+  - **Model**: `vosk-model-small-de-0.15` (~45MB, Apache License 2.0),
+    verified as the current recommended small German model against the
+    official model catalogue (alphacep/vosk-space's own `models.md`,
+    since alphacephei.com itself was unreachable from this add-on's
+    development sandbox) -- no smaller or newer small German model
+    supersedes it. Downloaded from
+    `https://alphacephei.com/vosk/models/vosk-model-small-de-0.15.zip`
+    (matching `vosk.MODEL_PRE_URL`'s own base URL) to
+    `/data/models/vosk/` only when `vosk_german` is selected, via an
+    atomic download-then-rename pattern identical to
+    `app/kroko_model.py`'s. A much larger `vosk-model-de-0.21` (1.9GB)
+    exists upstream but is deliberately NOT offered as a second option --
+    it would contradict this engine's entire reason for existing.
+  - **Hotwords / HA vocabulary -- investigated and deliberately NOT
+    wired up, not an unimplemented gap**: Vosk's `KaldiRecognizer` does
+    expose a grammar mechanism (a constructor grammar argument /
+    `SetGrammar()`, verified directly from the installed wheel's source
+    and from upstream's own Ruby binding docs, the clearest primary
+    documentation of its semantics), but it is a **hard closed-set
+    restriction** on the decoding graph (recognizes ONLY the given
+    phrases, plus a literal `"[unk]"` catch-all), not a soft bias/boost
+    like Moonshine's `set_keyterms()` or Kroko's sherpa-onnx hotwords.
+    Wiring the full, open-ended Home Assistant vocabulary into it would
+    break free-form recognition of everything else a user might say --
+    a strictly worse UX than no biasing. Honestly reported as
+    `supports_hotwords=False`/`supports_dynamic_vocabulary=False`
+    (`set_keyterms()` logs "HA vocabulary not supported by engine
+    vosk_german" and returns `([], True)`), matching Speechcatcher's own
+    precedent.
+  - **No CPU/GPU dependency of its own**: verified via a real install
+    (`pip show vosk`) that Vosk's only dependencies are `cffi`,
+    `requests`, `srt`, and `tqdm` -- no numpy/torch, and no CUDA/GPU
+    dependency (Kaldi's C++ decoder core is CPU-only in the plain PyPI
+    wheel; the `GpuInit`/`GpuThreadInit` calls its Python API exposes are
+    for a separately-built server variant this add-on never uses).
+  - **Deliberately minimal config surface**: no CPU-thread or beam-size
+    option -- `vosk.KaldiRecognizer` exposes neither for tuning, and this
+    engine's whole purpose is to be the simplest, lightest option.
+  - Only the selected engine is ever loaded (covered by
+    `app/tests/test_engine_dispatch.py`).
+- **New runtime dependencies**: `vosk==0.3.45`, plus its own real,
+  verified dependency footprint `cffi==2.1.1`, `requests==2.34.2`,
+  `srt==3.5.3` (`tqdm`/`websockets` were already pinned at compatible
+  versions). Verified manylinux/aarch64 wheels for cp311 exist for
+  `vosk`/`cffi`; `srt` is a pure-Python package with no compiled
+  extension (verified from its own `setup.py`), so it installs
+  identically on both architectures despite shipping only an sdist. A
+  full `pip install -r requirements-runtime.txt` (minus `pyaudio`, which
+  needs system PortAudio headers already handled by the Dockerfile) was
+  verified to resolve with no conflicts (`pip check`) against the entire
+  existing dependency stack (sherpa-onnx, onnxruntime, torch/torchaudio +
+  Speechcatcher's ESPnet-family chain, numpy, kokoro-onnx).
+- **`app/stt_benchmark.py`**: a new cross-engine STT benchmark CLI,
+  driven entirely through the shared `SttEngine`/`SttSession`
+  abstraction (`--engine moonshine|kroko|speechcatcher_m|speechcatcher_l|
+  vosk_german`) -- one code path for all five engines, not five separate
+  scripts. Reports audio duration, wall/model inference time, final-
+  result latency, RTF, and the raw transcript for manual inspection.
+  Does NOT compute a Word Error Rate (no ground-truth reference
+  transcript mechanism exists in this add-on's fixtures -- inventing one
+  would be dishonest). Time-to-first-partial-result is only reported for
+  an engine with `supports_partial_results=True`; none of the five
+  currently is, so it honestly prints "n/a" rather than a fabricated
+  number. Like `app/benchmark.py`/`app/tts_benchmark.py`, this is a
+  local, manual, run-on-your-own-hardware tool, not something CI runs or
+  a source of any numbers quoted in README/DOCS.
+- **`app/tts_benchmark.py` extended to cover Supertonic 3**
+  (`--engine supertonic_3`) -- an explicitly-reported gap from v0.4.0's
+  own development, now closed. Uses the exact same
+  `TtsSynthesizer`-interface measurement code as Pocket TTS/Kokoro ONNX,
+  not a separate code path.
+- Config schema: `stt_engine` enum extended to
+  `list(moonshine|kroko|speechcatcher_m|speechcatcher_l|vosk_german)`;
+  default remains `moonshine` (verified: an old persisted config with no
+  `stt_engine` key still resolves to `moonshine` through both the CLI
+  default and rootfs's `config_or_default()` fallback).
+- Dockerfile/rootfs run script: new `VOSK_CACHE=/data/models/vosk` env
+  var, matching the existing per-engine cache-directory pattern. No new
+  CLI flags needed (Vosk has no tunable options).
+- New CI e2e job `e2e-vosk-stt-transcribe` and
+  `app/tests/test_e2e_vosk_stt.py` (gated behind `RUN_VOSK_E2E=1`,
+  mirrors `test_e2e_kroko_stt.py`), plus new
+  `app/tests/test_vosk_engine.py`, `app/tests/test_vosk_model.py`,
+  `app/tests/test_stt_benchmark.py`, and extended
+  `test_engine_dispatch.py`/`test_config_stt_engine_option.py`/
+  `test_tts_benchmark.py` coverage.
+
+### Known limitations
+- The real end-to-end Vosk test (`app/tests/test_e2e_vosk_stt.py`) was
+  not run during development -- alphacephei.com was unreachable from this
+  add-on's development sandbox (only a git clone of alphacep/vosk-api and
+  alphacep/vosk-space was reachable, which is how the model name/API/
+  download-URL convention were verified). Run it explicitly
+  (`RUN_VOSK_E2E=1 pytest -m e2e`) before relying on it.
+- Real multi-arch (amd64 + aarch64) Docker builds and real hardware
+  benchmarks (both `app/stt_benchmark.py` and `app/tts_benchmark.py`) were
+  not performed in this add-on's development sandbox -- wheel
+  availability and dependency resolution were verified, but an actual
+  build and on-target-hardware benchmark run are needed before treating
+  this release as production-validated.
+
 ## [0.5.0] - 2026-09-19
 
 Adds two more user-selectable STT engines, **Speechcatcher M** and
