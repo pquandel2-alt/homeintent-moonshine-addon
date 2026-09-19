@@ -142,7 +142,7 @@ configuration:
   supertonic_voice:
     name: Supertonic-Stimme
     description: >-
-      Nur relevant bei TTS-Engine "supertonic_3". Eine der 10 eingebauten Stimmen: M1-M5
+      Nur relevant bei TTS-Engine "supertonic_3". Wähle eine der 10 eingebauten Stimmen: M1-M5
       (männlich) oder F1-F5 (weiblich). Standard ist "M1".
   supertonic_speed:
     name: Supertonic-Sprechgeschwindigkeit
@@ -150,10 +150,9 @@ configuration:
   supertonic_steps:
     name: Supertonic-Qualitätsstufen
     description: >-
-      Nur relevant bei TTS-Engine "supertonic_3". Anzahl der Entrauschungsschritte. 8
-      (Standard) ist Supertonics eigene dokumentierte ausgewogene Einstellung, 10 die
-      dokumentierte Alternative mit höherer Qualität (langsamer). Höhere Werte sind langsamer,
-      aber nicht offiziell dokumentiert.
+      Nur relevant bei TTS-Engine "supertonic_3". Anzahl der Entrauschungsschritte -- die
+      einzigen beiden von Supertonic dokumentierten Werte: "8" (Standard, ausgewogen) oder
+      "10" (höhere Qualität, langsamer).
   supertonic_threads:
     name: Supertonic-CPU-Threads
     description: Nur relevant bei TTS-Engine "supertonic_3". Anzahl der CPU-Threads, die sherpa-onnx für die Synthese verwendet.

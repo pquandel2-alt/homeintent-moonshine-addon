@@ -275,7 +275,7 @@ voice is `M1` (a male voice, matching upstream's own example default).
 | **kokoro_clause_pause** | seconds | `0.1` | Pause after a clause (kokoro-onnx's own default) |
 | **supertonic_voice** | `M1`-`M5`, `F1`-`F5`, or sid `0`-`9` | `M1` | Supertonic 3 voice. Ignored unless `tts_engine: supertonic_3` |
 | **supertonic_speed** | `0.25`–`3.0` | `1.0` | Supertonic 3 speech speed |
-| **supertonic_steps** | `2`–`32` | `8` | Supertonic 3 denoising steps. `8` is upstream's own documented default/balanced setting, `10` its documented higher-quality alternative |
+| **supertonic_steps** | `8` or `10` | `8` | Supertonic 3 denoising steps -- a dropdown of the only two values upstream documents: `8` (default/balanced), `10` (higher quality, slower) |
 | **supertonic_threads** | `1`–`64` | `1` | sherpa-onnx CPU threads for Supertonic 3 |
 
 Picking an unsupported combination (e.g. a Pocket voice name while
