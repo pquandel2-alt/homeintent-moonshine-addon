@@ -93,6 +93,30 @@ class SpeechcatcherSttSession:
     previous connection that dropped mid-utterance (without ever reaching
     ``finalize()``, whose ``is_final=True`` call already resets
     internally) can never leak state into the next session.
+
+    Lock scope -- held for the WHOLE session lifetime, not per-call: an
+    earlier version of this class re-acquired ``lock`` independently
+    inside ``start()``, ``add_audio()`` and ``finalize()`` (``async with
+    self._lock: ...`` in each), which released it back to the event loop
+    between every native call. Since the shared ``Speech2TextStreaming``
+    object holds its decoding state as plain instance attributes with no
+    per-caller isolation, two concurrent Wyoming connections could
+    interleave between those windows -- e.g. connection B's ``start()``
+    (which calls ``reset()``) landing in the gap between connection A's
+    ``add_audio()`` calls, silently wiping A's in-flight beam search state
+    mid-utterance. This class now acquires ``lock`` exactly once, in
+    ``start()``, and holds it across every subsequent ``add_audio()``/
+    ``finalize()`` call for this session -- a second session's ``start()``
+    genuinely blocks (``await lock.acquire()``) until this session's
+    lifecycle ends. ``close()`` is the single, idempotent release point:
+    it runs on every terminal path app/handler.py has (normal
+    finalize-then-close, a mid-stream disconnect, an exception raised out
+    of ``add_audio()``/``finalize()``, or a cancelled task unwinding
+    through a ``finally``), so the lock can never leak held past a
+    session's end. Re-entering the *same* session's own methods manually
+    (never done by app/handler.py, which owns exactly one session per
+    Wyoming connection) would deadlock -- this is not a re-entrant lock,
+    matching every other engine's own single-owner session usage.
     """
 
     def __init__(
@@ -108,6 +132,7 @@ class SpeechcatcherSttSession:
         self._add_audio_chunk_count = 0
         self._add_audio_compute_max_seconds = 0.0
         self._closed = False
+        self._lock_held = False
 
     @property
     def inference_time_seconds(self) -> float:
@@ -132,8 +157,22 @@ class SpeechcatcherSttSession:
         return self._add_audio_time_seconds / self._add_audio_chunk_count
 
     async def start(self) -> None:
-        async with self._lock:
+        # Acquire the shared decoder lock ONCE here and hold it for this
+        # session's entire lifetime (through add_audio()/finalize(), until
+        # close() releases it) -- see this class's docstring for why a
+        # per-call `async with self._lock` was a state-corruption bug.
+        # Genuinely blocks (does not busy-poll) until any previous session
+        # has released it via close().
+        await self._lock.acquire()
+        self._lock_held = True
+        try:
             await asyncio.to_thread(self._speech2text.reset)
+        except Exception:
+            # start() itself failed -- this session never truly begins, so
+            # it must not hold the lock forever; app/handler.py never calls
+            # add_audio()/finalize() after a failed start().
+            self._release_lock()
+            raise
 
     async def add_audio(self, samples: list[float], sample_rate: int = 16000) -> None:
         samples_arr = np.asarray(samples, dtype=np.float32)
@@ -148,14 +187,20 @@ class SpeechcatcherSttSession:
             # Speech2TextStreaming.__call__'s own source).
             self._speech2text(samples_arr, is_final=False, always_assemble_hyps=False)
 
-        async with self._lock:
+        # No `async with self._lock` here: the lock is already held by
+        # this session since start() -- re-acquiring it per call is
+        # exactly the bug this class now avoids (see class docstring).
+        try:
             started = time.monotonic()
             await asyncio.to_thread(_work)
-            elapsed = time.monotonic() - started
-            self._add_audio_time_seconds += elapsed
-            self._add_audio_chunk_count += 1
-            if elapsed > self._add_audio_compute_max_seconds:
-                self._add_audio_compute_max_seconds = elapsed
+        except Exception:
+            self._release_lock()
+            raise
+        elapsed = time.monotonic() - started
+        self._add_audio_time_seconds += elapsed
+        self._add_audio_chunk_count += 1
+        if elapsed > self._add_audio_compute_max_seconds:
+            self._add_audio_compute_max_seconds = elapsed
         self.audio_duration_seconds += len(samples) / sample_rate
 
     async def finalize(self) -> str:
@@ -167,18 +212,38 @@ class SpeechcatcherSttSession:
             best_text = hyps[0][0]
             return str(best_text) if best_text is not None else ""
 
-        async with self._lock:
+        # Still holding the lock acquired in start() -- finalize() is the
+        # last native call this session makes; app/handler.py always calls
+        # close() right after (see its own `finally: self._close_session()`
+        # around finalize()), which is what actually releases the lock.
+        try:
             started = time.monotonic()
             text = await asyncio.to_thread(_work)
             self.finalize_time_seconds = time.monotonic() - started
+        except Exception:
+            self._release_lock()
+            raise
         return text.strip()
+
+    def _release_lock(self) -> None:
+        """Idempotent: safe to call whether or not the lock is currently
+        held by this session (e.g. start() never ran, or close() already
+        released it)."""
+        if self._lock_held:
+            self._lock_held = False
+            self._lock.release()
 
     def close(self) -> None:
         # Speech2TextStreaming has no explicit native close/free call --
         # dropping the reference to the shared model is wrong (it is
-        # shared across sessions, see SpeechcatcherSttEngine), so this only
-        # marks the session closed. Idempotent: safe to call more than
+        # shared across sessions, see SpeechcatcherSttEngine). This is the
+        # single, idempotent release point for the shared lock: it runs on
+        # every terminal path (normal finalize-then-close, a mid-stream
+        # client disconnect, an exception during add_audio()/finalize(), or
+        # a cancelled task unwinding through a `finally`), so a session can
+        # never leak the lock held past its own end. Safe to call more than
         # once.
+        self._release_lock()
         self._closed = True
 
 

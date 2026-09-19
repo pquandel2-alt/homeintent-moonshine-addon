@@ -56,12 +56,46 @@ sherpa-onnx==1.13.8
 # platform and is compiled from its Cython/C sources at install time
 # (needs build-essential + python3-dev, already present in the Dockerfile
 # for Pocket TTS; verified this build succeeds without any extra system
-# package) and pyaudio, whose C extension needs PortAudio's headers (see
+# package), pyaudio, whose C extension needs PortAudio's headers (see
 # the Dockerfile's own `portaudio19-dev` addition) -- speechcatcher's own
 # CLI module unconditionally imports pyaudio at import time for its
 # (unused, by this add-on) live-microphone feature, so it must be
 # installable even though this add-on's Wyoming-driven code path never
 # calls into it.
+#
+# v0.6.1 dependency-chain fix: installing the three git-only packages with
+# `--no-deps` (see Dockerfile) means EVERY module they import unconditionally
+# at load time must be explicit here -- verified for real in a clean venv by
+# running `python3 -c "import speechcatcher.speechcatcher"` and resolving
+# each real ModuleNotFoundError in turn, not by trusting speechcatcher's/
+# espnet_model_zoo's own requirements files (which were already found to be
+# incomplete). Two real, previously-missing transitive dependencies were
+# found this way:
+#   - pandas (pinned below): imported unconditionally by espnet_model_zoo's
+#     own downloader.py (`import pandas as pd`, used to read its models
+#     table).
+#   - espnet (the full upstream PyPI package, NOT just the smaller
+#     espnet_streaming_decoder fork already pinned below): espnet_model_zoo's
+#     downloader.py does `from espnet2.main_funcs.pack_funcs import ...` --
+#     this is the espnet2 namespace shipped inside the actual `espnet`
+#     distribution (verified: espnet_streaming_decoder vendors its OWN
+#     `espnet_streaming_decoder.espnet2.*` copy for its own internal use, but
+#     that is a different, non-top-level import path and does NOT satisfy
+#     espnet_model_zoo's plain `import espnet2` statement). This is a real,
+#     externally-declared dependency (`pip show espnet_model_zoo` lists
+#     `Requires: espnet, ...`), not a guess. Deliberately NOT listed in this
+#     file: espnet is installed with `--no-deps`, in the SAME pip invocation
+#     as the three pinned git packages (see Dockerfile / build.yml's
+#     e2e-speechcatcher-stt-transcribe job), because espnet's own full
+#     dependency set (e.g. an older, conflicting sentencepiece pin) would
+#     otherwise fight the versions already pinned in this file for
+#     pocket-tts/speechcatcher -- only the actual imports this add-on's code
+#     path needs (a lightweight subset of espnet2.main_funcs) were verified
+#     to work with everything else already pinned here. espnet's own PyPI
+#     wheel is a platform-independent "py3-none-any" wheel with no
+#     compiled/native code, so it needs no separate per-architecture
+#     verification the way a compiled wheel would.
+pandas==2.3.2
 scipy==1.16.3
 soundfile==0.14.0
 six==1.17.0

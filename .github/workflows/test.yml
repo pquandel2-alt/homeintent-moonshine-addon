@@ -14,3 +14,39 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
       - run: pip install pytest pytest-asyncio pyyaml -r homeintent-moonshine-stt/requirements-runtime.txt
       - run: pytest homeintent-moonshine-stt/app/tests/ -v
+
+  speechcatcher-import-guard:
+    name: Speechcatcher dependency/import guard (no model download)
+    # Dedicated, lightweight, non-gated job (runs on every push/PR, unlike
+    # build.yml's release-tag-gated e2e-speechcatcher-stt-transcribe job):
+    # installs the exact same pinned git-only Speechcatcher dependency chain
+    # (+ espnet, see requirements-runtime.txt's own comment) and then
+    # actually imports it -- import only, no model weights downloaded. Kept
+    # as its own job rather than folded into the main `test` job above so
+    # the normal test job's install step stays fast; this is the whole
+    # point of this job existing (see test_speechcatcher_dependency_guard.py's
+    # module docstring): catching a missing transitive dependency (like the
+    # v0.6.1 pandas/espnet fix) on every normal push/PR, before it can only
+    # surface in the expensive, release-gated e2e job.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - run: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+      - run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
+      - run: pip install pytest pytest-asyncio pyyaml -r homeintent-moonshine-stt/requirements-runtime.txt
+      # Speechcatcher itself and its two git-only forks (+ the real espnet
+      # package) are not on PyPI/are installed with --no-deps -- the same
+      # exact commits/version as the Dockerfile and build.yml's
+      # e2e-speechcatcher-stt-transcribe job (see requirements-runtime.txt's
+      # own comment for why espnet is installed here rather than listed in
+      # that file).
+      - run: |
+          pip install --no-deps \
+            "git+https://github.com/speechcatcher-asr/espnet_streaming_decoder.git@76752e2eb37b68e4466fa65bae3a662ef1043f4c" \
+            "git+https://github.com/speechcatcher-asr/espnet_model_zoo.git@e3f3c8f69794e3cacf0a88900f2c3d5f17360fae" \
+            "git+https://github.com/speechcatcher-asr/speechcatcher.git@1f647a43105b7167b6a47e7b2af2ef3c4ff53a2b" \
+            "espnet==202511"
+      - run: pytest homeintent-moonshine-stt/app/tests/test_speechcatcher_dependency_guard.py -v

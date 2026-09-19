@@ -103,8 +103,9 @@ Three TTS engines are available, selected via **tts_engine**:
   (male) or `F1`-`F5` (female); a numeric sid `0`-`9` also works. Ignored
   unless `tts_engine: supertonic_3`.
 - **supertonic_speed** (default `1.0`, range `0.25`-`3.0`).
-- **supertonic_steps** (default `8`): denoising steps; `8` is Supertonic's
-  own documented default, `10` its documented higher-quality alternative.
+- **supertonic_steps** (default `8`): a dropdown of the only two values
+  Supertonic's own docs document -- `8` (default, balanced) or `10`
+  (higher quality, slower).
 - **supertonic_threads** (default `1`): sherpa-onnx CPU threads.
 - **tts_warmup** (default `true`): runs one discarded synthesis at startup so the
   first real request isn't slower than later ones. Pure performance optimization

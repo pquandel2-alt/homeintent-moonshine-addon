@@ -1,5 +1,108 @@
 # Changelog - HomeIntent Moonshine Voice Add-on
 
+## [0.6.1] - 2026-09-19
+
+Stability/bugfix-only release. No new engines, no new features -- see
+v0.6.0 for the full 5 STT x 3 TTS engine matrix, unchanged here.
+
+### Fixed
+- **Speechcatcher dependency chain was incomplete**: installing
+  speechcatcher/espnet_streaming_decoder/espnet_model_zoo with `--no-deps`
+  (see requirements-runtime.txt/Dockerfile) requires every module they
+  import unconditionally to be pinned explicitly. Reproduced for real in a
+  clean venv (`python3 -c "import speechcatcher.speechcatcher"`) and
+  resolved every real `ModuleNotFoundError` in turn until the import
+  genuinely succeeded. Two real, previously-missing runtime dependencies
+  were found and added:
+  - `pandas==2.3.2` -- imported unconditionally by espnet_model_zoo's own
+    `downloader.py`.
+  - `espnet==202511` (the real, full upstream package, not just the
+    already-pinned `espnet_streaming_decoder` fork) -- espnet_model_zoo's
+    `downloader.py` does `from espnet2.main_funcs.pack_funcs import ...`,
+    which resolves to the top-level `espnet2` namespace shipped inside the
+    real `espnet` distribution, NOT espnet_streaming_decoder's own
+    internally-vendored `espnet_streaming_decoder.espnet2.*` copy.
+    Installed with `--no-deps` alongside the three pinned git commits
+    (Dockerfile / build.yml / the new `speechcatcher-import-guard` CI job)
+    rather than via a normal `pip install -r`, since espnet's own declared
+    dependencies would otherwise downgrade/conflict with versions already
+    pinned for pocket-tts/speechcatcher.
+- **Speechcatcher concurrency/state-corruption bug**: `SpeechcatcherSttSession`
+  previously re-acquired its shared decoder lock independently inside
+  `start()`, `add_audio()`, and `finalize()`, releasing it back to the
+  event loop between every native call. Since the shared, single
+  `Speech2TextStreaming` object keeps all decoding state as plain instance
+  attributes with no per-caller isolation, two concurrent Wyoming
+  connections could interleave in those windows -- e.g. one connection's
+  `start()` (which calls `reset()`) landing between another connection's
+  `add_audio()` calls and silently corrupting its in-flight beam search
+  state. Fixed by acquiring the lock exactly once, in `start()`, and
+  holding it for the session's entire lifetime; `close()` is now the
+  single, idempotent release point, covering every terminal path
+  (normal finalize, mid-stream disconnect, an exception during
+  `add_audio()`/`finalize()`, or a cancelled task). See
+  `app/speechcatcher_engine.py` and the new
+  `app/tests/test_speechcatcher_concurrency.py`.
+
+### Changed
+- **HA-vocabulary refresh is now capability-gated**: the periodic
+  Home Assistant vocabulary refresh loop now only starts when BOTH
+  `use_ha_vocabulary: true` AND the active STT engine's
+  `capabilities.supports_dynamic_vocabulary` is `True`. Moonshine and Kroko
+  are unaffected (refresh keeps running); Speechcatcher and Vosk no longer
+  poll the Home Assistant API on a timer they can never make use of. A
+  clear one-time startup log line states when vocabulary refresh is not
+  supported by the active engine.
+- **STT performance log line now names the engine**: `STT completed: ...`
+  now starts with `engine=<engine_id>` (e.g. `moonshine`, `kroko`,
+  `speechcatcher_m`, `speechcatcher_l`, `vosk_german`), consistently across
+  all five STT engines via the shared `SttEngine`/`SttSession` abstraction
+  (no per-engine special-casing). Never logs transcript text.
+- **Supertonic voice (`supertonic_voice`) is now a real dropdown**, not free
+  text: `config.yaml`'s schema changed to
+  `list(M1|M2|M3|M4|M5|F1|F2|F3|F4|F5)`, matching the 10 real voices this
+  add-on's Supertonic implementation already supports. Default stays `M1`.
+  Runtime validation is kept as a defense-in-depth backstop and now
+  gracefully falls back to the default (with a warning log) for a value no
+  longer valid under the new schema, instead of crashing -- covers an
+  upgrade from a previous free-text value.
+- **Supertonic quality/steps (`supertonic_steps`) is now a real dropdown**,
+  not a free `int(2,32)` range: narrowed to `list(8|10)`, the only two
+  values supertone-inc/supertonic's own docs actually document (8 =
+  default/balanced, 10 = higher quality/slower). Default stays `8`. Same
+  graceful-fallback behavior as `supertonic_voice` above for an
+  out-of-range value from a previous installation.
+
+### Added
+- **Real Supertonic streaming E2E test**
+  (`app/tests/test_e2e_supertonic_tts.py`): exercises the actual modern
+  Wyoming streaming sequence (`synthesize-start` -> `synthesize-chunk` (x2)
+  -> `synthesize-stop` -> `synthesize-stopped`), verified against
+  `wyoming==1.10.2`'s own installed source. Verifies exactly one
+  AudioStart, at least one non-empty AudioChunk at a consistent sample
+  rate, exactly one AudioStop, exactly one SynthesizeStopped, and that the
+  chunked message sequence does not trigger duplicate synthesis/audio
+  output. Gated identically to the existing legacy single-shot test
+  (`RUN_SUPERTONIC_E2E=1`), which is unchanged.
+- **CI dependency/import guard**
+  (`app/tests/test_speechcatcher_dependency_guard.py` +
+  `.github/workflows/test.yml`'s new `speechcatcher-import-guard` job):
+  installs the pinned Speechcatcher git dependency chain (+ espnet) and
+  imports it on every push/PR (import-only, no model download), so a
+  missing transitive dependency (the exact class of bug fixed above) is
+  caught in normal, fast CI instead of only in the slow, release-gated e2e
+  job.
+- Docker image size is now measured and logged after the amd64 build in
+  CI (`build-amd64` job).
+
+### Documentation
+- Corrected a Dockerfile comment that implied `portaudio19-dev`/`pyaudio`
+  are only present in the image when Speechcatcher is selected. This
+  image bakes in every engine's Python dependencies unconditionally
+  regardless of the selected `stt_engine`/`tts_engine` -- only the model
+  files themselves are selected/downloaded per-engine at runtime. The
+  comment now states this precisely.
+
 ## [0.6.0] - 2026-09-19
 
 Adds a fifth and final user-selectable STT engine, **Vosk German**

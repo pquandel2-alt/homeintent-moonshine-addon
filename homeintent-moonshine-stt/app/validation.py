@@ -65,11 +65,17 @@ SPEECHCATCHER_BEAM_SIZE_MAX = 30
 SUPERTONIC_SPEED_MIN = 0.25
 SUPERTONIC_SPEED_MAX = 3.0
 
-# Bounds are our own defensive UI bounds around Supertonic's own documented
-# default (8) and higher-quality example (10) -- see
-# app/supertonic_tts.py's module docstring; not an upstream hard limit.
-SUPERTONIC_STEPS_MIN = 2
-SUPERTONIC_STEPS_MAX = 32
+# v0.6.1: config.yaml's `supertonic_steps` schema changed from a free
+# int(2,32) range to a real dropdown of the only two values supertone-inc/
+# supertonic's own docs actually document (8 = default/"Balanced", 10 =
+# "higher quality, slower" -- see app/supertonic_tts.py's module docstring).
+# This tuple is now the actual set of accepted values, not just a UI hint;
+# validate_supertonic_steps() below falls back to the default (never raises)
+# for any other value, so an old installation whose persisted options.json
+# still has a previously-valid-but-now-unlisted value (e.g. from the old
+# 2-32 range) upgrades cleanly instead of crash-looping -- see this add-on's
+# backward-compatibility policy (v0.6.1 CHANGELOG).
+SUPERTONIC_STEPS_ALLOWED = (8, 10)
 
 SUPERTONIC_THREADS_MIN = 1
 SUPERTONIC_THREADS_MAX = 64
@@ -195,12 +201,53 @@ def validate_supertonic_speed(value: float) -> float:
 
 
 def validate_supertonic_steps(value: int) -> int:
-    if not (SUPERTONIC_STEPS_MIN <= value <= SUPERTONIC_STEPS_MAX):
-        raise ValueError(
-            f"supertonic_steps must be between {SUPERTONIC_STEPS_MIN} and "
-            f"{SUPERTONIC_STEPS_MAX}, got {value}"
-        )
-    return value
+    """Accept only the documented presets (see SUPERTONIC_STEPS_ALLOWED).
+
+    Unlike most validate_*() functions in this module, this one never
+    raises: it is also this add-on's backward-compatibility path for an
+    old installation whose persisted config still holds a value from the
+    previous, wider `int(2,32)` schema (see config.yaml's v0.6.1
+    changelog entry) -- such a value now silently falls back to the
+    documented default with a clear warning log, rather than crashing the
+    whole add-on on every start.
+    """
+    if value in SUPERTONIC_STEPS_ALLOWED:
+        return value
+    import logging
+
+    from app.supertonic_tts import DEFAULT_SUPERTONIC_STEPS
+
+    logging.getLogger(__name__).warning(
+        "supertonic_steps=%s is not one of the supported presets %s; falling back to default %d",
+        value,
+        SUPERTONIC_STEPS_ALLOWED,
+        DEFAULT_SUPERTONIC_STEPS,
+    )
+    return DEFAULT_SUPERTONIC_STEPS
+
+
+def validate_supertonic_voice(value: str) -> str:
+    """Accept a known voice name (M1-M5/F1-F5) or, for backward
+    compatibility, a raw numeric sid string that was already valid under
+    the previous free-text schema (see config.yaml's v0.6.1 changelog
+    entry). Never raises: an unrecognized value falls back to the default
+    voice with a clear warning log instead of crashing the add-on.
+    """
+    import logging
+
+    from app.supertonic_tts import DEFAULT_SUPERTONIC_VOICE, SUPERTONIC_VOICE_NAME_TO_SID
+
+    normalized = value.strip().upper()
+    if normalized in SUPERTONIC_VOICE_NAME_TO_SID:
+        return normalized
+    if value.strip().isdigit() and int(value.strip()) in SUPERTONIC_VOICE_NAME_TO_SID.values():
+        return value.strip()
+    logging.getLogger(__name__).warning(
+        "supertonic_voice=%r is not a recognized voice; falling back to default %s",
+        value,
+        DEFAULT_SUPERTONIC_VOICE,
+    )
+    return DEFAULT_SUPERTONIC_VOICE
 
 
 def validate_supertonic_threads(value: int) -> int:
